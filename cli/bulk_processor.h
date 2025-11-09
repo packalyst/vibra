@@ -75,6 +75,12 @@ private:
     std::mutex console_mutex_;
     std::mutex recognition_mutex_;  // Serialize recognition calls for thread safety
 
+    // Rate limiting state
+    std::atomic<bool> rate_limited_{false};
+    std::atomic<int> rate_limit_retry_count_{0};
+    std::chrono::steady_clock::time_point rate_limit_until_;
+    std::mutex rate_limit_mutex_;
+
     size_t next_file_index_;
     std::atomic<bool> processing_complete_{false};
 };

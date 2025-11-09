@@ -239,6 +239,25 @@ void BulkProcessor::ProcessFile(const std::string& file_path) {
     Fingerprint* fingerprint = nullptr;
 
     try {
+        // Check if we're in rate limit cooldown
+        {
+            std::lock_guard<std::mutex> rate_lock(rate_limit_mutex_);
+            if (rate_limited_.load()) {
+                auto now = std::chrono::steady_clock::now();
+                if (now < rate_limit_until_) {
+                    // Still in cooldown, skip this file for now
+                    result.success = false;
+                    result.error_message = "Skipped due to rate limiting";
+                    stats_.failed++;
+                    AddToCache(result);
+                    stats_.processed++;
+                    return;
+                }
+                // Cooldown expired, clear rate limit flag
+                rate_limited_ = false;
+            }
+        }
+
         // Serialize recognition calls to avoid threading issues in vibra library
         std::lock_guard<std::mutex> recog_lock(recognition_mutex_);
 
@@ -250,46 +269,60 @@ void BulkProcessor::ProcessFile(const std::string& file_path) {
             result.error_message = "Failed to generate fingerprint";
             stats_.failed++;
         } else {
-            // Recognize with Shazam (with retry on rate limit)
-            std::string response;
-            int max_retries = 3;
-            int retry_count = 0;
-            bool success = false;
+            // Recognize with Shazam
+            std::string response = Shazam::Recognize(fingerprint);
 
-            while (retry_count < max_retries && !success) {
-                response = Shazam::Recognize(fingerprint);
-
-                // Validate response
-                if (IsValidJSON(response)) {
-                    success = true;
-                } else {
-                    // Check if it's a rate limit error
-                    if (response.find("429") != std::string::npos ||
-                        response.find("Too Many Requests") != std::string::npos) {
-                        retry_count++;
-                        if (retry_count < max_retries) {
-                            // Wait before retry (exponential backoff)
-                            std::this_thread::sleep_for(std::chrono::seconds(2 * retry_count));
-                        }
-                    } else {
-                        // Other error, don't retry
-                        break;
-                    }
-                }
-            }
-
-            if (success) {
+            // Validate response
+            if (IsValidJSON(response)) {
                 result.success = true;
                 result.json_response = response;
                 stats_.successful++;
+
+                // Reset rate limit counter on success
+                rate_limit_retry_count_ = 0;
             } else {
-                result.success = false;
-                if (response.find("429") != std::string::npos) {
-                    result.error_message = "Rate limited by Shazam API";
+                // Check if it's a rate limit error
+                if (response.find("429") != std::string::npos ||
+                    response.find("Too Many Requests") != std::string::npos) {
+
+                    std::lock_guard<std::mutex> rate_lock(rate_limit_mutex_);
+
+                    int retry_count = rate_limit_retry_count_.fetch_add(1);
+                    int backoff_seconds[] = {30, 60, 120};  // Progressive delays
+
+                    if (retry_count < 3) {
+                        int wait_time = backoff_seconds[retry_count];
+                        rate_limited_ = true;
+                        rate_limit_until_ = std::chrono::steady_clock::now() +
+                                           std::chrono::seconds(wait_time);
+
+                        {
+                            std::lock_guard<std::mutex> console_lock(console_mutex_);
+                            std::cout << "\n⚠️  RATE LIMITED - Pausing all threads for "
+                                     << wait_time << " seconds (attempt " << (retry_count + 1)
+                                     << "/3)..." << std::endl;
+                        }
+
+                        result.success = false;
+                        result.error_message = "Rate limited - will retry";
+                        stats_.failed++;
+                    } else {
+                        // Max retries exceeded
+                        {
+                            std::lock_guard<std::mutex> console_lock(console_mutex_);
+                            std::cout << "\n❌ MAX RATE LIMIT RETRIES EXCEEDED - Stopping processing"
+                                     << std::endl;
+                        }
+                        processing_complete_ = true;  // Signal threads to stop
+                        result.success = false;
+                        result.error_message = "Rate limit exceeded - max retries reached";
+                        stats_.failed++;
+                    }
                 } else {
+                    result.success = false;
                     result.error_message = "Invalid response from Shazam";
+                    stats_.failed++;
                 }
-                stats_.failed++;
             }
         }
 
@@ -313,7 +346,13 @@ void BulkProcessor::ProcessFile(const std::string& file_path) {
 }
 
 void BulkProcessor::WorkerThread() {
-    while (true) {
+    while (!processing_complete_.load()) {
+        // Check if we're in rate limit cooldown
+        if (rate_limited_.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            continue;
+        }
+
         std::string file_path;
 
         {
