@@ -219,7 +219,24 @@ void BulkProcessor::LoadCache() {
         pos = result_end;
     }
 
+    // Restore stats from cached results
+    int cached_successful = 0;
+    int cached_failed = 0;
+
+    for (const auto& pair : results_cache_) {
+        if (pair.second.success) {
+            cached_successful++;
+        } else {
+            cached_failed++;
+        }
+    }
+
+    stats_.successful = cached_successful;
+    stats_.failed = cached_failed;
+    stats_.skipped = results_cache_.size();
+
     std::cout << "Loaded " << results_cache_.size() << " cached results from " << output_json_path_ << std::endl;
+    std::cout << "Restored stats: OK:" << cached_successful << " FAIL:" << cached_failed << std::endl;
 }
 
 void BulkProcessor::SaveCache() {
@@ -616,6 +633,11 @@ void BulkProcessor::RotateProxy(int timeout_seconds) {
     // Simple flow: always rotate on 429, no cooldown
     std::cout << "Rate limited - rotating proxy IP..." << std::endl;
 
+    // Get the current IP before rotation
+    std::cout << "Getting current IP before rotation..." << std::endl;
+    std::string old_ip = FetchCurrentIP();
+    std::cout << "Current IP: " << old_ip << std::endl;
+
     // Call the rotation URL to trigger IP rotation on the proxy service
     std::cout << "Calling rotation URL to rotate proxy IP..." << std::endl;
     std::string response = FetchProxyFromURL(proxy_config_.rotation_url);
@@ -625,10 +647,10 @@ void BulkProcessor::RotateProxy(int timeout_seconds) {
     std::cout << "Waiting 20 seconds for rotation to take effect..." << std::endl;
     std::this_thread::sleep_for(std::chrono::seconds(20));
 
-    std::cout << "Now waiting for proxy to come back online..." << std::endl;
+    std::cout << "Now checking for IP change..." << std::endl;
     std::cout << "Timeout: " << timeout_seconds << "s" << std::endl;
 
-    // Now test the SAME proxy (current_proxy_) repeatedly until it works or timeout
+    // Now test the SAME proxy (current_proxy_) repeatedly until IP changes or timeout
     auto start_time = std::chrono::steady_clock::now();
     int test_interval = 3; // Test every 3 seconds
 
@@ -638,22 +660,32 @@ void BulkProcessor::RotateProxy(int timeout_seconds) {
         ).count();
 
         if (elapsed >= timeout_seconds) {
-            std::cerr << "[X] Timeout (" << timeout_seconds << "s) - proxy never came back online" << std::endl;
+            std::cerr << "[X] Timeout (" << timeout_seconds << "s) - IP never changed from " << old_ip << std::endl;
             processing_complete_ = true;
             return;
         }
 
-        std::cout << "Testing proxy... (" << elapsed << "s elapsed)" << std::endl;
+        std::cout << "Testing proxy and checking IP... (" << elapsed << "s elapsed)" << std::endl;
 
         // Test the SAME proxy (the proxy config doesn't change, just the IP behind it)
         bool proxy_works = TestProxy(current_proxy_, 10);
 
         if (proxy_works) {
-            std::cout << "[OK] Proxy is back online with rotated IP!" << std::endl;
-            return;
+            // Proxy is responding, now check if IP changed
+            std::string new_ip = FetchCurrentIP();
+            std::cout << "Proxy responding, IP: " << new_ip << std::endl;
+
+            if (new_ip != old_ip && new_ip != "unknown") {
+                std::cout << "[OK] Proxy IP successfully rotated: " << old_ip << " -> " << new_ip << std::endl;
+                return;
+            } else {
+                std::cout << "IP hasn't changed yet (still " << new_ip << "), waiting..." << std::endl;
+            }
+        } else {
+            std::cout << "Proxy not responding yet..." << std::endl;
         }
 
-        std::cout << "Proxy not responding yet, waiting " << test_interval << " seconds..." << std::endl;
+        std::cout << "Waiting " << test_interval << " seconds before next check..." << std::endl;
         std::this_thread::sleep_for(std::chrono::seconds(test_interval));
     }
 }
