@@ -106,38 +106,76 @@ void BulkProcessor::LoadCache() {
     cache_file.close();
 
     // Simple JSON parsing for our cache format
-    // Format: {"results": [{"file": "path", "response": {...}, "success": true}, ...]}
+    // Format: {"results": [{"file": "path", "success": true, "ip": "...", "response": {...}}, ...]}
     size_t pos = 0;
     while ((pos = json_content.find("\"file\":", pos)) != std::string::npos) {
+        // Extract file path
         size_t file_start = json_content.find("\"", pos + 7) + 1;
         size_t file_end = json_content.find("\"", file_start);
         std::string file_path = json_content.substr(file_start, file_end - file_start);
 
-        // Find the corresponding response
-        size_t response_start = json_content.find("\"response\":", file_end);
-        size_t success_pos = json_content.find("\"success\":", file_end);
-
-        if (response_start != std::string::npos && success_pos != std::string::npos) {
-            BulkResult result;
-            result.file_path = file_path;
-            result.success = json_content.find("true", success_pos, 10) != std::string::npos;
-
-            // Extract full response (simplified - assume it's the next object)
-            size_t resp_obj_start = json_content.find("{", response_start);
-            int brace_count = 1;
-            size_t resp_obj_end = resp_obj_start + 1;
-
-            while (brace_count > 0 && resp_obj_end < json_content.length()) {
-                if (json_content[resp_obj_end] == '{') brace_count++;
-                else if (json_content[resp_obj_end] == '}') brace_count--;
-                resp_obj_end++;
-            }
-
-            result.json_response = json_content.substr(resp_obj_start, resp_obj_end - resp_obj_start);
-            results_cache_[file_path] = result;
+        // Find the end of this result object (next "}" at same level)
+        size_t result_start = json_content.rfind("{", pos);
+        size_t result_end = result_start + 1;
+        int brace_count = 1;
+        while (brace_count > 0 && result_end < json_content.length()) {
+            if (json_content[result_end] == '{') brace_count++;
+            else if (json_content[result_end] == '}') brace_count--;
+            result_end++;
         }
 
-        pos = file_end;
+        // Extract result block for parsing
+        std::string result_block = json_content.substr(result_start, result_end - result_start);
+
+        BulkResult result;
+        result.file_path = file_path;
+
+        // Parse success field
+        size_t success_pos = result_block.find("\"success\":");
+        if (success_pos != std::string::npos) {
+            result.success = result_block.find("true", success_pos) < result_block.find("false", success_pos);
+        }
+
+        // Parse IP field (optional)
+        size_t ip_pos = result_block.find("\"ip\":");
+        if (ip_pos != std::string::npos) {
+            size_t ip_start = result_block.find("\"", ip_pos + 5) + 1;
+            size_t ip_end = result_block.find("\"", ip_start);
+            if (ip_end != std::string::npos) {
+                result.ip_address = result_block.substr(ip_start, ip_end - ip_start);
+            }
+        }
+
+        // Parse response field (for successful results)
+        size_t response_pos = result_block.find("\"response\":");
+        if (response_pos != std::string::npos) {
+            size_t resp_obj_start = result_block.find("{", response_pos);
+            if (resp_obj_start != std::string::npos) {
+                int resp_brace_count = 1;
+                size_t resp_obj_end = resp_obj_start + 1;
+
+                while (resp_brace_count > 0 && resp_obj_end < result_block.length()) {
+                    if (result_block[resp_obj_end] == '{') resp_brace_count++;
+                    else if (result_block[resp_obj_end] == '}') resp_brace_count--;
+                    resp_obj_end++;
+                }
+
+                result.json_response = result_block.substr(resp_obj_start, resp_obj_end - resp_obj_start);
+            }
+        }
+
+        // Parse error field (for failed results)
+        size_t error_pos = result_block.find("\"error\":");
+        if (error_pos != std::string::npos) {
+            size_t error_start = result_block.find("\"", error_pos + 8) + 1;
+            size_t error_end = result_block.find("\"", error_start);
+            if (error_end != std::string::npos) {
+                result.error_message = result_block.substr(error_start, error_end - error_start);
+            }
+        }
+
+        results_cache_[file_path] = result;
+        pos = result_end;
     }
 
     std::cout << "Loaded " << results_cache_.size() << " cached results from " << output_json_path_ << std::endl;
