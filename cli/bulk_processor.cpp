@@ -13,11 +13,12 @@
 #include <cstring>
 
 BulkProcessor::BulkProcessor(const std::string& directory_path, const std::string& output_json_path,
-                             int num_threads, bool resume)
+                             int num_threads, bool resume, int delay_seconds)
     : directory_path_(directory_path),
       output_json_path_(output_json_path),
       num_threads_(num_threads),
       resume_enabled_(resume),
+      delay_seconds_(delay_seconds),
       next_file_index_(0) {
 
     // Default supported formats
@@ -343,6 +344,11 @@ void BulkProcessor::ProcessFile(const std::string& file_path) {
 
     AddToCache(result);
     stats_.processed++;
+
+    // Apply delay after processing (helps avoid rate limiting)
+    if (delay_seconds_ > 0) {
+        std::this_thread::sleep_for(std::chrono::seconds(delay_seconds_));
+    }
 }
 
 void BulkProcessor::WorkerThread() {

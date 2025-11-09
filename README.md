@@ -109,15 +109,22 @@ Options:
   Commands:
       -F, --fingerprint                     Generate a fingerprint
       -R, --recognize                       Recognize a song
+      -B, --bulk                            Bulk recognize all audio files in a directory
       -h, --help                            Display this help menu
   Sources:
       File sources:
           -f, --file                            File path
+          -d, --dir                             Directory path for bulk recognition
       Raw PCM sources:
           -s, --seconds                         Chunk seconds
           -r, --rate                            Sample rate
           -c, --channels                        Channels
           -b, --bits                            Bits per sample
+  Bulk options:
+      -o, --output                          Output JSON file path (default: results.json)
+      -t, --threads                         Number of parallel threads (default: 1)
+      -w, --delay                           Delay in seconds after each file (default: 2)
+      --resume                              Resume from previous run (skip already processed files)
 ```
 
 </details>
@@ -177,6 +184,71 @@ vibra --recognize --file sample.mp3
 # You can use your own FFmpeg which is optimized for your system.
 ```
 * You can see the sample shazam result json file in [here](https://gist.github.com/BayernMuller/b92fd43eef4471b7016009196e62e4d2)
+
+##### Bulk recognition for music libraries
+* vibra supports bulk processing of entire music directories with advanced features:
+  * **Parallel processing** with configurable thread count
+  * **Resume capability** to skip already-processed files
+  * **Progress tracking** with real-time statistics
+  * **Automatic rate limiting** with exponential backoff
+  * **Configurable delays** to avoid API rate limits
+  * **JSON output** with detailed results and statistics
+
+**Basic bulk recognition:**
+```bash
+vibra --bulk --dir /path/to/music/folder
+```
+
+**Advanced options:**
+```bash
+# Parallel processing with 4 threads
+vibra --bulk --dir ./music --threads 4
+
+# Custom output file
+vibra --bulk --dir ./music --output results.json
+
+# Resume interrupted processing
+vibra --bulk --dir ./music --resume
+
+# Custom delay between files (default: 2 seconds)
+vibra --bulk --dir ./music --delay 5
+
+# Complete example with all options
+vibra --bulk --dir ./music --output songs.json --threads 4 --delay 3 --resume
+```
+
+**Output format:**
+```json
+{
+  "results": [
+    {
+      "file": "/path/to/song.mp3",
+      "success": true,
+      "response": { ...full Shazam JSON response... }
+    },
+    {
+      "file": "/path/to/unknown.mp3",
+      "success": false,
+      "error": "Rate limited by Shazam API"
+    }
+  ],
+  "stats": {
+    "total": 100,
+    "processed": 100,
+    "successful": 95,
+    "failed": 5,
+    "skipped": 0
+  }
+}
+```
+
+**Supported formats:** MP3, WAV, FLAC, OGG, M4A, AAC
+
+**Rate limiting:**
+* vibra automatically handles Shazam API rate limits with progressive backoff (30/60/120 seconds)
+* All threads pause during rate limit cooldown
+* Processing stops gracefully after 3 rate limit attempts
+* Use `--delay` to proactively avoid rate limiting
 
 ### FFI Bindings
 * vibra provides FFI bindings, allowing other languages to leverage its music recognition functionality.

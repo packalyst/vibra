@@ -54,6 +54,9 @@ int CLI::Run(int argc, char **argv)
     args::ValueFlag<int> threads(bulk_options, "threads",
                                  "Number of parallel threads (default: 1)",
                                  {'t', "threads"});
+    args::ValueFlag<int> delay(bulk_options, "delay",
+                               "Delay in seconds after each file (default: 2, helps avoid rate limiting)",
+                               {'w', "delay"});
     args::Flag resume(bulk_options, "resume",
                      "Resume from previous run (skip already processed files)",
                      {"resume"});
@@ -88,12 +91,14 @@ int CLI::Run(int argc, char **argv)
         std::string dir_path = args::get(directory);
         std::string json_path = output_json ? args::get(output_json) : "results.json";
         int num_threads = threads ? args::get(threads) : 1;
+        int delay_seconds = delay ? args::get(delay) : 2;
         bool enable_resume = resume;
 
         if (num_threads < 1) num_threads = 1;
         if (num_threads > 16) num_threads = 16; // Reasonable upper limit
+        if (delay_seconds < 0) delay_seconds = 0;
 
-        BulkProcessor processor(dir_path, json_path, num_threads, enable_resume);
+        BulkProcessor processor(dir_path, json_path, num_threads, enable_resume, delay_seconds);
         processor.Process();
 
         return 0;

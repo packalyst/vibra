@@ -26,7 +26,7 @@ struct BulkStats {
 class BulkProcessor {
 public:
     BulkProcessor(const std::string& directory_path, const std::string& output_json_path,
-                  int num_threads = 1, bool resume = false);
+                  int num_threads = 1, bool resume = false, int delay_seconds = 2);
 
     // Main processing function
     void Process();
@@ -64,6 +64,7 @@ private:
     std::string output_json_path_;
     int num_threads_;
     bool resume_enabled_;
+    int delay_seconds_;
 
     std::vector<std::string> supported_formats_;
     std::vector<std::string> files_to_process_;
