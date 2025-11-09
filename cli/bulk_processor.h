@@ -57,6 +57,7 @@ private:
     // Progress display
     void DisplayProgress();
     void PrintFinalReport();
+    void AutoSaveThread();
 
     // Member variables
     std::string directory_path_;
@@ -72,6 +73,7 @@ private:
     std::mutex cache_mutex_;
     std::mutex queue_mutex_;
     std::mutex console_mutex_;
+    std::mutex recognition_mutex_;  // Serialize recognition calls for thread safety
 
     size_t next_file_index_;
     std::atomic<bool> processing_complete_{false};

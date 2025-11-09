@@ -142,7 +142,19 @@ void BulkProcessor::LoadCache() {
 }
 
 void BulkProcessor::SaveCache() {
-    std::lock_guard<std::mutex> lock(cache_mutex_);
+    // Create a copy of results to avoid holding lock during file I/O
+    std::map<std::string, BulkResult> results_copy;
+    int total, processed, successful, failed, skipped;
+
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        results_copy = results_cache_;
+        total = stats_.total_files.load();
+        processed = stats_.processed.load();
+        successful = stats_.successful.load();
+        failed = stats_.failed.load();
+        skipped = stats_.skipped.load();
+    } // Lock released here
 
     std::ofstream out_file(output_json_path_);
     if (!out_file.is_open()) {
@@ -153,7 +165,7 @@ void BulkProcessor::SaveCache() {
     out_file << "{\n  \"results\": [\n";
 
     bool first = true;
-    for (const auto& pair : results_cache_) {
+    for (const auto& pair : results_copy) {
         if (!first) {
             out_file << ",\n";
         }
@@ -175,11 +187,11 @@ void BulkProcessor::SaveCache() {
 
     out_file << "\n  ],\n";
     out_file << "  \"stats\": {\n";
-    out_file << "    \"total\": " << stats_.total_files.load() << ",\n";
-    out_file << "    \"processed\": " << stats_.processed.load() << ",\n";
-    out_file << "    \"successful\": " << stats_.successful.load() << ",\n";
-    out_file << "    \"failed\": " << stats_.failed.load() << ",\n";
-    out_file << "    \"skipped\": " << stats_.skipped.load() << "\n";
+    out_file << "    \"total\": " << total << ",\n";
+    out_file << "    \"processed\": " << processed << ",\n";
+    out_file << "    \"successful\": " << successful << ",\n";
+    out_file << "    \"failed\": " << failed << ",\n";
+    out_file << "    \"skipped\": " << skipped << "\n";
     out_file << "  }\n";
     out_file << "}\n";
 
@@ -199,10 +211,14 @@ void BulkProcessor::AddToCache(const BulkResult& result) {
 void BulkProcessor::ProcessFile(const std::string& file_path) {
     BulkResult result;
     result.file_path = file_path;
+    Fingerprint* fingerprint = nullptr;
 
     try {
+        // Serialize recognition calls to avoid threading issues in vibra library
+        std::lock_guard<std::mutex> recog_lock(recognition_mutex_);
+
         // Generate fingerprint
-        Fingerprint* fingerprint = vibra_get_fingerprint_from_music_file(file_path.c_str());
+        fingerprint = vibra_get_fingerprint_from_music_file(file_path.c_str());
 
         if (!fingerprint) {
             result.success = false;
@@ -211,13 +227,22 @@ void BulkProcessor::ProcessFile(const std::string& file_path) {
         } else {
             // Recognize with Shazam
             std::string response = Shazam::Recognize(fingerprint);
-            vibra_free_fingerprint(fingerprint);
 
             result.success = true;
             result.json_response = response;
             stats_.successful++;
         }
+
+        // Free fingerprint while still holding lock
+        if (fingerprint) {
+            vibra_free_fingerprint(fingerprint);
+            fingerprint = nullptr;
+        }
     } catch (const std::exception& e) {
+        if (fingerprint) {
+            vibra_free_fingerprint(fingerprint);
+            fingerprint = nullptr;
+        }
         result.success = false;
         result.error_message = e.what();
         stats_.failed++;
@@ -225,9 +250,6 @@ void BulkProcessor::ProcessFile(const std::string& file_path) {
 
     AddToCache(result);
     stats_.processed++;
-
-    // Save cache after every file (for resume capability)
-    SaveCache();
 }
 
 void BulkProcessor::WorkerThread() {
@@ -250,6 +272,19 @@ void BulkProcessor::WorkerThread() {
         }
 
         ProcessFile(file_path);
+    }
+}
+
+void BulkProcessor::AutoSaveThread() {
+    int last_processed = 0;
+    while (!processing_complete_.load()) {
+        std::this_thread::sleep_for(std::chrono::seconds(5));
+
+        int current_processed = stats_.processed.load();
+        if (current_processed > last_processed) {
+            SaveCache();
+            last_processed = current_processed;
+        }
     }
 }
 
@@ -327,14 +362,18 @@ void BulkProcessor::Process() {
     // Start progress display thread
     std::thread progress_thread(&BulkProcessor::DisplayProgress, this);
 
+    // Start auto-save thread (saves every 5 seconds)
+    std::thread autosave_thread(&BulkProcessor::AutoSaveThread, this);
+
     // Wait for all workers to complete
     for (auto& worker : workers) {
         worker.join();
     }
 
-    // Stop progress display
+    // Stop background threads
     processing_complete_ = true;
     progress_thread.join();
+    autosave_thread.join();
 
     // Final save
     SaveCache();
