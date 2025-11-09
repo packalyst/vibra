@@ -208,6 +208,31 @@ void BulkProcessor::AddToCache(const BulkResult& result) {
     results_cache_[result.file_path] = result;
 }
 
+bool IsValidJSON(const std::string& response) {
+    // Check if response starts with '{' or '[' (basic JSON check)
+    if (response.empty()) return false;
+
+    size_t first_char = response.find_first_not_of(" \t\r\n");
+    if (first_char == std::string::npos) return false;
+
+    char first = response[first_char];
+    if (first != '{' && first != '[') return false;
+
+    // Check for HTML error pages
+    if (response.find("<!doctype") != std::string::npos ||
+        response.find("<!DOCTYPE") != std::string::npos ||
+        response.find("<html") != std::string::npos) {
+        return false;
+    }
+
+    // Check for "track" field which should exist in successful Shazam responses
+    if (response.find("\"track\"") == std::string::npos) {
+        return false;
+    }
+
+    return true;
+}
+
 void BulkProcessor::ProcessFile(const std::string& file_path) {
     BulkResult result;
     result.file_path = file_path;
@@ -225,12 +250,47 @@ void BulkProcessor::ProcessFile(const std::string& file_path) {
             result.error_message = "Failed to generate fingerprint";
             stats_.failed++;
         } else {
-            // Recognize with Shazam
-            std::string response = Shazam::Recognize(fingerprint);
+            // Recognize with Shazam (with retry on rate limit)
+            std::string response;
+            int max_retries = 3;
+            int retry_count = 0;
+            bool success = false;
 
-            result.success = true;
-            result.json_response = response;
-            stats_.successful++;
+            while (retry_count < max_retries && !success) {
+                response = Shazam::Recognize(fingerprint);
+
+                // Validate response
+                if (IsValidJSON(response)) {
+                    success = true;
+                } else {
+                    // Check if it's a rate limit error
+                    if (response.find("429") != std::string::npos ||
+                        response.find("Too Many Requests") != std::string::npos) {
+                        retry_count++;
+                        if (retry_count < max_retries) {
+                            // Wait before retry (exponential backoff)
+                            std::this_thread::sleep_for(std::chrono::seconds(2 * retry_count));
+                        }
+                    } else {
+                        // Other error, don't retry
+                        break;
+                    }
+                }
+            }
+
+            if (success) {
+                result.success = true;
+                result.json_response = response;
+                stats_.successful++;
+            } else {
+                result.success = false;
+                if (response.find("429") != std::string::npos) {
+                    result.error_message = "Rate limited by Shazam API";
+                } else {
+                    result.error_message = "Invalid response from Shazam";
+                }
+                stats_.failed++;
+            }
         }
 
         // Free fingerprint while still holding lock
