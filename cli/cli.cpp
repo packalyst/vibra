@@ -61,6 +61,26 @@ int CLI::Run(int argc, char **argv)
                      "Resume from previous run (skip already processed files)",
                      {"resume"});
 
+    args::Group proxy_options(parser, "Proxy options:");
+    args::ValueFlag<std::string> proxy_host(proxy_options, "host",
+                                            "Proxy host address",
+                                            {"proxy-host"});
+    args::ValueFlag<int> proxy_port(proxy_options, "port",
+                                    "Proxy port (default: 8080)",
+                                    {"proxy-port"});
+    args::ValueFlag<std::string> proxy_user(proxy_options, "user",
+                                            "Proxy username",
+                                            {"proxy-user"});
+    args::ValueFlag<std::string> proxy_pass(proxy_options, "pass",
+                                            "Proxy password",
+                                            {"proxy-pass"});
+    args::ValueFlag<std::string> proxy_type(proxy_options, "type",
+                                            "Proxy type: http or socks5 (default: http)",
+                                            {"proxy-type"});
+    args::ValueFlag<std::string> proxy_rotation_url(proxy_options, "url",
+                                                    "URL to fetch new proxy from for rotation",
+                                                    {"proxy-rotation-url"});
+
     try
     {
         parser.ParseCLI(argc, argv);
@@ -99,6 +119,37 @@ int CLI::Run(int argc, char **argv)
         if (delay_seconds < 0) delay_seconds = 0;
 
         BulkProcessor processor(dir_path, json_path, num_threads, enable_resume, delay_seconds);
+
+        // Configure proxy if provided
+        if (proxy_host || proxy_rotation_url)
+        {
+            ProxyConfig proxy_config;
+
+            if (proxy_rotation_url)
+            {
+                // Use rotation URL
+                proxy_config.rotation_url = args::get(proxy_rotation_url);
+            }
+            else if (proxy_host)
+            {
+                // Use static proxy configuration
+                proxy_config.host = args::get(proxy_host);
+                proxy_config.port = proxy_port ? args::get(proxy_port) : 8080;
+                proxy_config.type = proxy_type ? args::get(proxy_type) : "http";
+
+                if (proxy_user)
+                {
+                    proxy_config.username = args::get(proxy_user);
+                }
+                if (proxy_pass)
+                {
+                    proxy_config.password = args::get(proxy_pass);
+                }
+            }
+
+            processor.SetProxyConfig(proxy_config);
+        }
+
         processor.Process();
 
         return 0;

@@ -19,7 +19,7 @@ std::size_t writeCallback(void *contents, size_t size, size_t nmemb, void *userp
     return realsize;
 }
 
-std::string Shazam::Recognize(const Fingerprint *fingerprint)
+std::string Shazam::Recognize(const Fingerprint *fingerprint, const std::string& proxy)
 {
     auto content = getRequestContent(fingerprint->uri, fingerprint->sample_ms);
     auto user_agent = getUserAgent();
@@ -46,6 +46,43 @@ std::string Shazam::Recognize(const Fingerprint *fingerprint)
 
         curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "gzip, deflate, br");
         curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+
+        // Configure proxy if provided
+        if (!proxy.empty())
+        {
+            // Parse proxy format: [type://][user:pass@]host:port
+            std::string proxy_str = proxy;
+            curl_proxytype proxy_type = CURLPROXY_HTTP;
+
+            // Detect proxy type from URL scheme
+            if (proxy_str.find("socks5://") == 0)
+            {
+                proxy_type = CURLPROXY_SOCKS5;
+                proxy_str = proxy_str.substr(9); // Remove "socks5://"
+            }
+            else if (proxy_str.find("http://") == 0)
+            {
+                proxy_str = proxy_str.substr(7); // Remove "http://"
+            }
+
+            // Extract authentication if present (user:pass@)
+            std::string auth;
+            size_t at_pos = proxy_str.find('@');
+            if (at_pos != std::string::npos)
+            {
+                auth = proxy_str.substr(0, at_pos);
+                proxy_str = proxy_str.substr(at_pos + 1);
+            }
+
+            // Set proxy options
+            curl_easy_setopt(curl, CURLOPT_PROXY, proxy_str.c_str());
+            curl_easy_setopt(curl, CURLOPT_PROXYTYPE, proxy_type);
+
+            if (!auth.empty())
+            {
+                curl_easy_setopt(curl, CURLOPT_PROXYUSERPWD, auth.c_str());
+            }
+        }
 
         CURLcode res = curl_easy_perform(curl);
         if (res != CURLE_OK)

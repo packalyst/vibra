@@ -11,6 +11,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <cstring>
+#include <curl/curl.h>
 
 BulkProcessor::BulkProcessor(const std::string& directory_path, const std::string& output_json_path,
                              int num_threads, bool resume, int delay_seconds)
@@ -270,8 +271,9 @@ void BulkProcessor::ProcessFile(const std::string& file_path) {
             result.error_message = "Failed to generate fingerprint";
             stats_.failed++;
         } else {
-            // Recognize with Shazam
-            std::string response = Shazam::Recognize(fingerprint);
+            // Recognize with Shazam (use proxy if configured)
+            std::string proxy = GetCurrentProxy();
+            std::string response = Shazam::Recognize(fingerprint, proxy);
 
             // Validate response
             if (IsValidJSON(response)) {
@@ -488,4 +490,106 @@ void BulkProcessor::Process() {
 
     PrintFinalReport();
     std::cout << "Time elapsed:      " << duration.count() << " seconds" << std::endl;
+}
+
+std::string BulkProcessor::GetCurrentProxy() {
+    std::lock_guard<std::mutex> lock(proxy_mutex_);
+    return current_proxy_;
+}
+
+void BulkProcessor::RotateProxy() {
+    std::lock_guard<std::mutex> lock(proxy_mutex_);
+
+    if (proxy_config_.rotation_url.empty()) {
+        // No rotation URL configured, keep current proxy
+        return;
+    }
+
+    // Fetch new proxy from rotation URL
+    std::string new_proxy = FetchProxyFromURL(proxy_config_.rotation_url);
+    if (!new_proxy.empty()) {
+        current_proxy_ = new_proxy;
+        std::cout << "Rotated to new proxy: " << current_proxy_ << std::endl;
+    }
+}
+
+std::string BulkProcessor::FetchProxyFromURL(const std::string& url) {
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        std::cerr << "Failed to initialize curl for proxy rotation" << std::endl;
+        return "";
+    }
+
+    std::string response;
+
+    // Callback function for curl
+    auto writeCallback = +[](void* contents, size_t size, size_t nmemb, void* userp) -> size_t {
+        std::string* buffer = reinterpret_cast<std::string*>(userp);
+        size_t realsize = size * nmemb;
+        buffer->append(reinterpret_cast<char*>(contents), realsize);
+        return realsize;
+    };
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L); // 10 second timeout
+
+    CURLcode res = curl_easy_perform(curl);
+
+    if (res != CURLE_OK) {
+        std::cerr << "Failed to fetch proxy from URL: " << curl_easy_strerror(res) << std::endl;
+        curl_easy_cleanup(curl);
+        return "";
+    }
+
+    curl_easy_cleanup(curl);
+
+    // Trim whitespace from response
+    response.erase(0, response.find_first_not_of(" \t\r\n"));
+    response.erase(response.find_last_not_of(" \t\r\n") + 1);
+
+    return response;
+}
+
+void BulkProcessor::SetProxyConfig(const ProxyConfig& config) {
+    std::lock_guard<std::mutex> lock(proxy_mutex_);
+    proxy_config_ = config;
+
+    // If rotation URL is provided, fetch initial proxy
+    if (!proxy_config_.rotation_url.empty()) {
+        current_proxy_ = FetchProxyFromURL(proxy_config_.rotation_url);
+        if (!current_proxy_.empty()) {
+            std::cout << "Initial proxy from rotation URL: " << current_proxy_ << std::endl;
+        }
+    } else if (!proxy_config_.host.empty()) {
+        // Build proxy string from config
+        std::stringstream proxy_ss;
+
+        // Add type prefix
+        if (!proxy_config_.type.empty()) {
+            proxy_ss << proxy_config_.type << "://";
+        } else {
+            proxy_ss << "http://";
+        }
+
+        // Add authentication if provided
+        if (!proxy_config_.username.empty()) {
+            proxy_ss << proxy_config_.username;
+            if (!proxy_config_.password.empty()) {
+                proxy_ss << ":" << proxy_config_.password;
+            }
+            proxy_ss << "@";
+        }
+
+        // Add host and port
+        proxy_ss << proxy_config_.host;
+        if (proxy_config_.port > 0) {
+            proxy_ss << ":" << proxy_config_.port;
+        }
+
+        current_proxy_ = proxy_ss.str();
+        std::cout << "Using configured proxy: " << proxy_config_.host << ":"
+                  << proxy_config_.port << std::endl;
+    }
 }

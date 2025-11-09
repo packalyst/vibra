@@ -125,6 +125,13 @@ Options:
       -t, --threads                         Number of parallel threads (default: 1)
       -w, --delay                           Delay in seconds after each file (default: 2)
       --resume                              Resume from previous run (skip already processed files)
+  Proxy options:
+      --proxy-host                          Proxy host address
+      --proxy-port                          Proxy port (default: 8080)
+      --proxy-user                          Proxy username
+      --proxy-pass                          Proxy password
+      --proxy-type                          Proxy type: http or socks5 (default: http)
+      --proxy-rotation-url                  URL to fetch new proxy from for rotation
 ```
 
 </details>
@@ -249,6 +256,35 @@ vibra --bulk --dir ./music --output songs.json --threads 4 --delay 3 --resume
 * All threads pause during rate limit cooldown
 * Processing stops gracefully after 3 rate limit attempts
 * Use `--delay` to proactively avoid rate limiting
+
+**Proxy support:**
+vibra supports HTTP and SOCKS5 proxies for bulk recognition to avoid IP-based rate limiting:
+
+```bash
+# Basic HTTP proxy
+vibra --bulk --dir ./music --proxy-host proxy.example.com --proxy-port 8080
+
+# HTTP proxy with authentication
+vibra --bulk --dir ./music --proxy-host proxy.example.com --proxy-port 8080 \
+      --proxy-user myuser --proxy-pass mypassword
+
+# SOCKS5 proxy
+vibra --bulk --dir ./music --proxy-host proxy.example.com --proxy-port 1080 \
+      --proxy-type socks5
+
+# Proxy rotation with URL (automatically fetches new proxy from URL)
+vibra --bulk --dir ./music --proxy-rotation-url https://api.example.com/get-proxy
+
+# Complete example with proxy and all options
+vibra --bulk --dir ./music --output results.json --threads 4 --delay 3 \
+      --proxy-host proxy.example.com --proxy-port 8080 --proxy-user user --proxy-pass pass
+```
+
+**Proxy rotation:**
+* Use `--proxy-rotation-url` to fetch proxy configuration from an external URL
+* The URL should return a proxy string in format: `[type://][user:pass@]host:port`
+* Examples: `http://proxy.com:8080`, `socks5://user:pass@proxy.com:1080`
+* Proxy is fetched once at startup from the rotation URL
 
 ### FFI Bindings
 * vibra provides FFI bindings, allowing other languages to leverage its music recognition functionality.

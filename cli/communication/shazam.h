@@ -12,7 +12,7 @@ class Shazam
     static constexpr char HOST[] = "https://amp.shazam.com/discovery/v5/fr/FR/android/-/tag/";
 
 public:
-    static std::string Recognize(const Fingerprint *fingerprint);
+    static std::string Recognize(const Fingerprint *fingerprint, const std::string& proxy = "");
 
 private:
     static std::string getShazamHost();

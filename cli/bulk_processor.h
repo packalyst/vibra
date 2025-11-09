@@ -15,6 +15,15 @@ struct BulkResult {
     std::string error_message;
 };
 
+struct ProxyConfig {
+    std::string host;
+    int port = 0;
+    std::string username;
+    std::string password;
+    std::string type;  // "http", "socks5", etc.
+    std::string rotation_url;  // URL to fetch new proxy from
+};
+
 struct BulkStats {
     std::atomic<int> total_files{0};
     std::atomic<int> processed{0};
@@ -35,6 +44,7 @@ public:
     void SetThreadCount(int threads) { num_threads_ = threads; }
     void EnableResume(bool enable) { resume_enabled_ = enable; }
     void SetSupportedFormats(const std::vector<std::string>& formats);
+    void SetProxyConfig(const ProxyConfig& config);
 
     // Get statistics
     const BulkStats& GetStats() const { return stats_; }
@@ -49,6 +59,11 @@ private:
     void SaveCache();
     bool IsAlreadyProcessed(const std::string& file_path);
     void AddToCache(const BulkResult& result);
+
+    // Proxy management
+    std::string GetCurrentProxy();
+    void RotateProxy();
+    std::string FetchProxyFromURL(const std::string& url);
 
     // Processing
     void ProcessFile(const std::string& file_path);
@@ -69,6 +84,10 @@ private:
     std::vector<std::string> supported_formats_;
     std::vector<std::string> files_to_process_;
     std::map<std::string, BulkResult> results_cache_;
+
+    ProxyConfig proxy_config_;
+    std::string current_proxy_;
+    std::mutex proxy_mutex_;
 
     BulkStats stats_;
     std::mutex cache_mutex_;
