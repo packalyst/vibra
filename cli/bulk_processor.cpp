@@ -20,6 +20,7 @@ BulkProcessor::BulkProcessor(const std::string& directory_path, const std::strin
       num_threads_(num_threads),
       resume_enabled_(resume),
       delay_seconds_(delay_seconds),
+      proxy_rotation_timeout_(60),
       next_file_index_(0) {
 
     // Default supported formats
@@ -338,8 +339,8 @@ void BulkProcessor::ProcessFile(const std::string& file_path) {
                         std::lock_guard<std::mutex> console_lock(console_mutex_);
                         std::cout << "\n⚠️  RATE LIMITED (429) - Rotating to new proxy..." << std::endl;
 
-                        // Rotate proxy will test and wait for working proxy (60s timeout)
-                        RotateProxy();
+                        // Rotate proxy will test and wait for working proxy with configured timeout
+                        RotateProxy(proxy_rotation_timeout_);
 
                         // Check if rotation succeeded
                         if (processing_complete_.load()) {
@@ -564,7 +565,7 @@ std::string BulkProcessor::GetCurrentProxy() {
     return current_proxy_;
 }
 
-void BulkProcessor::RotateProxy() {
+void BulkProcessor::RotateProxy(int timeout_seconds) {
     std::lock_guard<std::mutex> lock(proxy_mutex_);
 
     if (proxy_config_.rotation_url.empty()) {
@@ -574,7 +575,7 @@ void BulkProcessor::RotateProxy() {
 
     std::cout << "Fetching new proxy from rotation URL..." << std::endl;
 
-    // Try to get and test a working proxy with 60 second total timeout
+    // Try to get and test a working proxy with specified timeout
     auto start_time = std::chrono::steady_clock::now();
     int max_attempts = 10;
 
@@ -583,8 +584,8 @@ void BulkProcessor::RotateProxy() {
             std::chrono::steady_clock::now() - start_time
         ).count();
 
-        if (elapsed >= 60) {
-            std::cerr << "❌ Timeout (60s) waiting for working proxy" << std::endl;
+        if (elapsed >= timeout_seconds) {
+            std::cerr << "❌ Timeout (" << timeout_seconds << "s) waiting for working proxy" << std::endl;
             processing_complete_ = true;
             return;
         }
@@ -600,7 +601,7 @@ void BulkProcessor::RotateProxy() {
         std::cout << "Testing new proxy: " << new_proxy << std::endl;
 
         // Test proxy with remaining timeout
-        int remaining_timeout = 60 - elapsed;
+        int remaining_timeout = timeout_seconds - elapsed;
         if (remaining_timeout < 5) remaining_timeout = 5;
 
         if (TestProxy(new_proxy, remaining_timeout)) {
@@ -660,20 +661,11 @@ void BulkProcessor::SetProxyConfig(const ProxyConfig& config) {
     std::lock_guard<std::mutex> lock(proxy_mutex_);
     proxy_config_ = config;
 
-    // If rotation URL is provided, fetch initial proxy
+    // If rotation URL is provided, just store it - we'll call it on 429 errors
     if (!proxy_config_.rotation_url.empty()) {
-        current_proxy_ = FetchProxyFromURL(proxy_config_.rotation_url);
-        if (current_proxy_.empty()) {
-            std::cerr << "❌ Failed to fetch proxy from rotation URL" << std::endl;
-            exit(1);
-        }
-
-        std::cout << "Testing proxy from rotation URL: " << current_proxy_ << std::endl;
-        if (!TestProxy(current_proxy_, 10)) {
-            std::cerr << "❌ Proxy test failed. Proxy is not working!" << std::endl;
-            exit(1);
-        }
-        std::cout << "✓ Proxy is working: " << current_proxy_ << std::endl;
+        std::cout << "Proxy rotation URL configured: " << proxy_config_.rotation_url << std::endl;
+        std::cout << "Will fetch and test proxy on rate limit (429) errors" << std::endl;
+        // Don't fetch or test yet - wait for 429
 
     } else if (!proxy_config_.host.empty()) {
         // Build proxy string from config
@@ -703,6 +695,7 @@ void BulkProcessor::SetProxyConfig(const ProxyConfig& config) {
 
         current_proxy_ = proxy_ss.str();
 
+        // Test static proxy on startup
         std::cout << "Testing proxy: " << proxy_config_.host << ":" << proxy_config_.port << std::endl;
         if (!TestProxy(current_proxy_, 10)) {
             std::cerr << "❌ Proxy test failed. Proxy is not working!" << std::endl;

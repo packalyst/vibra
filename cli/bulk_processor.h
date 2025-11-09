@@ -63,7 +63,7 @@ private:
 
     // Proxy management
     std::string GetCurrentProxy();
-    void RotateProxy();
+    void RotateProxy(int timeout_seconds = 60);
     std::string FetchProxyFromURL(const std::string& url);
 
     // IP detection
@@ -95,6 +95,7 @@ private:
     ProxyConfig proxy_config_;
     std::string current_proxy_;
     std::mutex proxy_mutex_;
+    int proxy_rotation_timeout_;
 
     BulkStats stats_;
     std::mutex cache_mutex_;
