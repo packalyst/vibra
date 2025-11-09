@@ -640,7 +640,11 @@ void BulkProcessor::RotateProxy(int timeout_seconds) {
     std::string response = FetchProxyFromURL(proxy_config_.rotation_url);
     // Response doesn't matter - it's just triggering rotation
 
-    std::cout << "IP rotation triggered, waiting for proxy to come back online..." << std::endl;
+    std::cout << "IP rotation triggered" << std::endl;
+    std::cout << "Waiting 10 seconds for rotation to take effect..." << std::endl;
+    std::this_thread::sleep_for(std::chrono::seconds(10));
+
+    std::cout << "Now waiting for proxy to come back online..." << std::endl;
     std::cout << "Timeout: " << timeout_seconds << "s" << std::endl;
 
     // Now test the SAME proxy (current_proxy_) repeatedly until it works or timeout
