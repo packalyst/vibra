@@ -613,20 +613,15 @@ void BulkProcessor::RotateProxy(int timeout_seconds) {
         return;
     }
 
-    std::cout << "Fetching new proxy from rotation URL..." << std::endl;
+    // Call the rotation URL to trigger IP rotation on the proxy service
+    std::cout << "Calling rotation URL to rotate proxy IP..." << std::endl;
+    std::string response = FetchProxyFromURL(proxy_config_.rotation_url);
+    // Response doesn't matter - it's just triggering rotation
 
-    // Fetch new proxy from rotation URL ONCE
-    std::string new_proxy = FetchProxyFromURL(proxy_config_.rotation_url);
-    if (new_proxy.empty()) {
-        std::cerr << "[X] Failed to fetch proxy from rotation URL" << std::endl;
-        processing_complete_ = true;
-        return;
-    }
+    std::cout << "IP rotation triggered, waiting for proxy to come back online..." << std::endl;
+    std::cout << "Timeout: " << timeout_seconds << "s" << std::endl;
 
-    std::cout << "Got new proxy: " << new_proxy << std::endl;
-    std::cout << "Waiting for proxy to come online (timeout: " << timeout_seconds << "s)..." << std::endl;
-
-    // Now test the proxy repeatedly until it works or timeout
+    // Now test the SAME proxy (current_proxy_) repeatedly until it works or timeout
     auto start_time = std::chrono::steady_clock::now();
     int test_interval = 3; // Test every 3 seconds
 
@@ -636,23 +631,22 @@ void BulkProcessor::RotateProxy(int timeout_seconds) {
         ).count();
 
         if (elapsed >= timeout_seconds) {
-            std::cerr << "[X] Timeout (" << timeout_seconds << "s) - proxy never came online" << std::endl;
+            std::cerr << "[X] Timeout (" << timeout_seconds << "s) - proxy never came back online" << std::endl;
             processing_complete_ = true;
             return;
         }
 
         std::cout << "Testing proxy... (" << elapsed << "s elapsed)" << std::endl;
 
-        // Test proxy with short timeout per test
-        bool proxy_works = TestProxy(new_proxy, 10);
+        // Test the SAME proxy (the proxy config doesn't change, just the IP behind it)
+        bool proxy_works = TestProxy(current_proxy_, 10);
 
         if (proxy_works) {
-            current_proxy_ = new_proxy;
-            std::cout << "[OK] Proxy is online and working!" << std::endl;
+            std::cout << "[OK] Proxy is back online with rotated IP!" << std::endl;
             return;
         }
 
-        std::cout << "Proxy test failed, waiting " << test_interval << " seconds before retry..." << std::endl;
+        std::cout << "Proxy not responding yet, waiting " << test_interval << " seconds..." << std::endl;
         std::this_thread::sleep_for(std::chrono::seconds(test_interval));
     }
 }
