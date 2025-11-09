@@ -33,6 +33,7 @@ public:
 private:
     static std::string getFFmpegPath();
     static bool isWindows();
+    static std::string escapeShellArg(const std::string& arg);
 };
 
 LowQualityTrack FFmpegWrapper::ConvertToLowQaulityPcm(
@@ -48,7 +49,7 @@ LowQualityTrack FFmpegWrapper::ConvertToLowQaulityPcm(
 
     std::stringstream ss;
     ss << ffmpeg_path;
-    ss << " -i " << input_file;
+    ss << " -i " << escapeShellArg(input_file);
     ss << " -f "
        << "s" << LOW_QUALITY_SAMPLE_BIT_WIDTH << "le";
     ss << " -acodec "
@@ -119,6 +120,48 @@ bool FFmpegWrapper::isWindows()
 #endif // _WIN32
 
     return false;
+}
+
+std::string FFmpegWrapper::escapeShellArg(const std::string& arg)
+{
+#ifdef _MSC_VER
+    // Windows: use double quotes and escape internal quotes
+    std::string result = "\"";
+    for (char c : arg)
+    {
+        if (c == '"')
+        {
+            result += "\\\"";
+        }
+        else if (c == '\\')
+        {
+            result += "\\\\";
+        }
+        else
+        {
+            result += c;
+        }
+    }
+    result += "\"";
+    return result;
+#else
+    // Unix/Linux: use single quotes and handle embedded single quotes
+    std::string result = "'";
+    for (char c : arg)
+    {
+        if (c == '\'')
+        {
+            // Close quote, add escaped quote, reopen quote
+            result += "'\\''";
+        }
+        else
+        {
+            result += c;
+        }
+    }
+    result += "'";
+    return result;
+#endif
 }
 
 } // namespace ffmpeg
