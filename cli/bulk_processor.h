@@ -101,8 +101,6 @@ private:
     std::string current_proxy_;
     std::mutex proxy_mutex_;
     int proxy_rotation_timeout_;
-    std::chrono::steady_clock::time_point last_rotation_time_;
-    std::atomic<bool> rotation_in_progress_{false};
 
     BulkStats stats_;
     std::mutex cache_mutex_;
