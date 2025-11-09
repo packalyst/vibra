@@ -11,6 +11,7 @@ FetchContent_Populate(args)
 add_executable(vibra
     main.cpp
     cli.cpp
+    bulk_processor.cpp
     communication/shazam.cpp
 )
 

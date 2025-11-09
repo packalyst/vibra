@@ -4,6 +4,7 @@
 #include <vector>
 #include <args.hxx>
 #include "communication/shazam.h"
+#include "bulk_processor.h"
 
 int CLI::Run(int argc, char **argv)
 {
@@ -24,6 +25,8 @@ int CLI::Run(int argc, char **argv)
     args::Flag fingerprint_only(actions, "fingerprint", "Generate a fingerprint",
                                 {'F', "fingerprint"});
     args::Flag recognize(actions, "recognize", "Recognize a song", {'R', "recognize"});
+    args::Flag bulk_recognize(actions, "bulk", "Bulk recognize all audio files in a directory",
+                              {'B', "bulk"});
     args::HelpFlag help(actions, "help", "Display this help menu", {'h', "help"});
 
     args::Group sources(parser, "Sources:", args::Group::Validators::Xor);
@@ -31,6 +34,8 @@ int CLI::Run(int argc, char **argv)
     args::Group file_sources(sources, "File sources:", args::Group::Validators::Xor);
     args::ValueFlag<std::string> music_file(file_sources, "file",
                                             "FFmpeg required for non-wav files", {'f', "file"});
+    args::ValueFlag<std::string> directory(file_sources, "dir",
+                                           "Directory path for bulk recognition", {'d', "dir"});
 
     args::Group raw_sources(sources, "Raw PCM sources:", args::Group::Validators::All);
     args::ValueFlag<int> chunk_seconds(raw_sources, "seconds", "Chunk seconds", {'s', "seconds"});
@@ -41,6 +46,17 @@ int CLI::Run(int argc, char **argv)
     args::Group source_type(raw_sources, "Source type:", args::Group::Validators::AtMostOne);
     args::Flag signed_pcm(source_type, "signed", "Signed PCM (default)", {'S', "signed"});
     args::Flag float_pcm(source_type, "float", "Float PCM", {'D', "float"});
+
+    args::Group bulk_options(parser, "Bulk options:");
+    args::ValueFlag<std::string> output_json(bulk_options, "output",
+                                             "Output JSON file path (default: results.json)",
+                                             {'o', "output"});
+    args::ValueFlag<int> threads(bulk_options, "threads",
+                                 "Number of parallel threads (default: 1)",
+                                 {'t', "threads"});
+    args::Flag resume(bulk_options, "resume",
+                     "Resume from previous run (skip already processed files)",
+                     {"resume"});
 
     try
     {
@@ -60,6 +76,30 @@ int CLI::Run(int argc, char **argv)
         return 1;
     }
 
+    // Handle bulk recognition mode
+    if (bulk_recognize)
+    {
+        if (!directory)
+        {
+            std::cerr << "Error: --dir/-d is required for bulk recognition" << std::endl;
+            return 1;
+        }
+
+        std::string dir_path = args::get(directory);
+        std::string json_path = output_json ? args::get(output_json) : "results.json";
+        int num_threads = threads ? args::get(threads) : 1;
+        bool enable_resume = resume;
+
+        if (num_threads < 1) num_threads = 1;
+        if (num_threads > 16) num_threads = 16; // Reasonable upper limit
+
+        BulkProcessor processor(dir_path, json_path, num_threads, enable_resume);
+        processor.Process();
+
+        return 0;
+    }
+
+    // Handle single file recognition mode
     Fingerprint *fingerprint = nullptr;
     if (music_file)
     {
