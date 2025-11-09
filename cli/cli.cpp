@@ -9,7 +9,7 @@
 int CLI::Run(int argc, char **argv)
 {
     args::ArgumentParser parser("");
-    parser.SetArgumentSeparations(false, false, true, true);
+    parser.SetArgumentSeparations(true, true, true, true);
 
     parser.helpParams.width = 200;
     parser.helpParams.progindent = 0;
