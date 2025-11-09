@@ -178,6 +178,10 @@ void BulkProcessor::SaveCache() {
         out_file << "      \"file\": \"" << result.file_path << "\",\n";
         out_file << "      \"success\": " << (result.success ? "true" : "false") << ",\n";
 
+        if (!result.ip_address.empty()) {
+            out_file << "      \"ip\": \"" << result.ip_address << "\",\n";
+        }
+
         if (result.success) {
             out_file << "      \"response\": " << result.json_response << "\n";
         } else {
@@ -274,6 +278,9 @@ void BulkProcessor::ProcessFile(const std::string& file_path) {
             // Recognize with Shazam (use proxy if configured)
             std::string proxy = GetCurrentProxy();
             std::string response = Shazam::Recognize(fingerprint, proxy);
+
+            // Fetch current IP address
+            result.ip_address = FetchCurrentIP();
 
             // Validate response
             if (IsValidJSON(response)) {
@@ -592,4 +599,74 @@ void BulkProcessor::SetProxyConfig(const ProxyConfig& config) {
         std::cout << "Using configured proxy: " << proxy_config_.host << ":"
                   << proxy_config_.port << std::endl;
     }
+}
+
+std::string BulkProcessor::FetchCurrentIP() {
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        return "unknown";
+    }
+
+    std::string response;
+    std::string proxy = GetCurrentProxy();
+
+    // Callback function for curl
+    auto writeCallback = +[](void* contents, size_t size, size_t nmemb, void* userp) -> size_t {
+        std::string* buffer = reinterpret_cast<std::string*>(userp);
+        size_t realsize = size * nmemb;
+        buffer->append(reinterpret_cast<char*>(contents), realsize);
+        return realsize;
+    };
+
+    curl_easy_setopt(curl, CURLOPT_URL, "https://api.country.is");
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L); // 5 second timeout
+
+    // Apply proxy if configured
+    if (!proxy.empty()) {
+        std::string proxy_str = proxy;
+        curl_proxytype proxy_type = CURLPROXY_HTTP;
+
+        if (proxy_str.find("socks5://") == 0) {
+            proxy_type = CURLPROXY_SOCKS5;
+            proxy_str = proxy_str.substr(9);
+        } else if (proxy_str.find("http://") == 0) {
+            proxy_str = proxy_str.substr(7);
+        }
+
+        std::string auth;
+        size_t at_pos = proxy_str.find('@');
+        if (at_pos != std::string::npos) {
+            auth = proxy_str.substr(0, at_pos);
+            proxy_str = proxy_str.substr(at_pos + 1);
+        }
+
+        curl_easy_setopt(curl, CURLOPT_PROXY, proxy_str.c_str());
+        curl_easy_setopt(curl, CURLOPT_PROXYTYPE, proxy_type);
+
+        if (!auth.empty()) {
+            curl_easy_setopt(curl, CURLOPT_PROXYUSERPWD, auth.c_str());
+        }
+    }
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        return "unknown";
+    }
+
+    // Parse JSON response to extract IP
+    // Response format: {"ip":"1.2.3.4","country":"US"}
+    size_t ip_start = response.find("\"ip\":\"");
+    if (ip_start != std::string::npos) {
+        ip_start += 6; // Skip '{"ip":"'
+        size_t ip_end = response.find("\"", ip_start);
+        if (ip_end != std::string::npos) {
+            return response.substr(ip_start, ip_end - ip_start);
+        }
+    }
+
+    return "unknown";
 }

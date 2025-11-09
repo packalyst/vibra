@@ -13,6 +13,7 @@ struct BulkResult {
     std::string json_response;
     bool success;
     std::string error_message;
+    std::string ip_address;
 };
 
 struct ProxyConfig {
@@ -64,6 +65,9 @@ private:
     std::string GetCurrentProxy();
     void RotateProxy();
     std::string FetchProxyFromURL(const std::string& url);
+
+    // IP detection
+    std::string FetchCurrentIP();
 
     // Processing
     void ProcessFile(const std::string& file_path);
