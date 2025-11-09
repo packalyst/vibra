@@ -644,13 +644,15 @@ void BulkProcessor::RotateProxy(int timeout_seconds) {
         std::cout << "Testing proxy... (" << elapsed << "s elapsed)" << std::endl;
 
         // Test proxy with short timeout per test
-        if (TestProxy(new_proxy, 10)) {
+        bool proxy_works = TestProxy(new_proxy, 10);
+
+        if (proxy_works) {
             current_proxy_ = new_proxy;
             std::cout << "[OK] Proxy is online and working!" << std::endl;
             return;
         }
 
-        std::cout << "Proxy not responding yet, waiting " << test_interval << " seconds..." << std::endl;
+        std::cout << "Proxy test failed, waiting " << test_interval << " seconds before retry..." << std::endl;
         std::this_thread::sleep_for(std::chrono::seconds(test_interval));
     }
 }
@@ -792,9 +794,15 @@ bool BulkProcessor::TestProxy(const std::string& proxy, int timeout_seconds) {
     }
 
     CURLcode res = curl_easy_perform(curl);
-    curl_easy_cleanup(curl);
 
-    return (res == CURLE_OK);
+    bool success = (res == CURLE_OK);
+
+    if (!success) {
+        std::cerr << "  Proxy test failed: " << curl_easy_strerror(res) << std::endl;
+    }
+
+    curl_easy_cleanup(curl);
+    return success;
 }
 
 std::string BulkProcessor::FetchCurrentIP() {
