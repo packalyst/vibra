@@ -12,6 +12,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <cstring>
+#include <climits>
 #include <curl/curl.h>
 
 // Static instance for signal handler
@@ -19,13 +20,20 @@ BulkProcessor* BulkProcessor::current_instance_ = nullptr;
 
 BulkProcessor::BulkProcessor(const std::string& directory_path, const std::string& output_json_path,
                              int num_threads, bool resume, int delay_seconds)
-    : directory_path_(directory_path),
-      output_json_path_(output_json_path),
+    : output_json_path_(output_json_path),
       num_threads_(num_threads),
       resume_enabled_(resume),
       delay_seconds_(delay_seconds),
       proxy_rotation_timeout_(60),
       next_file_index_(0) {
+
+    // Convert directory path to absolute path
+    char resolved_path[PATH_MAX];
+    if (realpath(directory_path.c_str(), resolved_path) != nullptr) {
+        directory_path_ = resolved_path;
+    } else {
+        directory_path_ = directory_path; // Fallback to original if realpath fails
+    }
 
     // Default supported formats
     supported_formats_ = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac"};
