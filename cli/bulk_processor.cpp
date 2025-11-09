@@ -613,6 +613,28 @@ void BulkProcessor::RotateProxy(int timeout_seconds) {
         return;
     }
 
+    // Check if rotation is already in progress
+    if (rotation_in_progress_.load()) {
+        std::cout << "Rotation already in progress, skipping duplicate rotation call" << std::endl;
+        return;
+    }
+
+    // Check if we rotated recently (within last 120 seconds) - don't rotate again too soon
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed_since_last = std::chrono::duration_cast<std::chrono::seconds>(
+        now - last_rotation_time_
+    ).count();
+
+    if (elapsed_since_last < 120) {
+        std::cout << "Rotated " << elapsed_since_last << "s ago, waiting for proxy to stabilize..." << std::endl;
+        std::cout << "Skipping rotation call (cooldown: 120s)" << std::endl;
+        return;
+    }
+
+    // Mark rotation as in progress
+    rotation_in_progress_ = true;
+    last_rotation_time_ = now;
+
     // Call the rotation URL to trigger IP rotation on the proxy service
     std::cout << "Calling rotation URL to rotate proxy IP..." << std::endl;
     std::string response = FetchProxyFromURL(proxy_config_.rotation_url);
@@ -632,6 +654,7 @@ void BulkProcessor::RotateProxy(int timeout_seconds) {
 
         if (elapsed >= timeout_seconds) {
             std::cerr << "[X] Timeout (" << timeout_seconds << "s) - proxy never came back online" << std::endl;
+            rotation_in_progress_ = false;
             processing_complete_ = true;
             return;
         }
@@ -643,6 +666,9 @@ void BulkProcessor::RotateProxy(int timeout_seconds) {
 
         if (proxy_works) {
             std::cout << "[OK] Proxy is back online with rotated IP!" << std::endl;
+            std::cout << "Waiting 5 seconds for proxy to stabilize before continuing..." << std::endl;
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            rotation_in_progress_ = false;
             return;
         }
 
