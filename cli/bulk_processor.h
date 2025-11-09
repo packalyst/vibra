@@ -7,6 +7,7 @@
 #include <mutex>
 #include <atomic>
 #include <thread>
+#include <csignal>
 
 struct BulkResult {
     std::string file_path;
@@ -40,6 +41,10 @@ public:
 
     // Main processing function
     void Process();
+
+    // Signal handling
+    static void SignalHandler(int signal);
+    static BulkProcessor* current_instance_;
 
     // Configuration
     void SetThreadCount(int threads) { num_threads_ = threads; }

@@ -13,6 +13,9 @@
 #include <cstring>
 #include <curl/curl.h>
 
+// Static instance for signal handler
+BulkProcessor* BulkProcessor::current_instance_ = nullptr;
+
 BulkProcessor::BulkProcessor(const std::string& directory_path, const std::string& output_json_path,
                              int num_threads, bool resume, int delay_seconds)
     : directory_path_(directory_path),
@@ -28,6 +31,43 @@ BulkProcessor::BulkProcessor(const std::string& directory_path, const std::strin
 
     if (resume_enabled_) {
         LoadCache();
+    }
+
+    // Register signal handler for graceful shutdown
+    current_instance_ = this;
+    std::signal(SIGINT, SignalHandler);
+    std::signal(SIGTERM, SignalHandler);
+}
+
+void BulkProcessor::SignalHandler(int) {
+    if (current_instance_) {
+        std::cout << "\n\n" << std::string(60, '=') << std::endl;
+        std::cout << "INTERRUPTED - Shutting down gracefully..." << std::endl;
+        std::cout << std::string(60, '=') << std::endl;
+
+        // Signal threads to stop
+        current_instance_->processing_complete_ = true;
+
+        // Give threads a moment to finish current operations
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+        // Save current progress
+        current_instance_->SaveCache();
+
+        // Print final report
+        std::cout << "\nProgress at interruption:" << std::endl;
+        std::cout << "  Total files:       " << current_instance_->stats_.total_files.load() << std::endl;
+        std::cout << "  Processed:         " << current_instance_->stats_.processed.load() << std::endl;
+        std::cout << "  Successful:        " << current_instance_->stats_.successful.load() << std::endl;
+        std::cout << "  Failed:            " << current_instance_->stats_.failed.load() << std::endl;
+        if (current_instance_->stats_.skipped.load() > 0) {
+            std::cout << "  Skipped (cached):  " << current_instance_->stats_.skipped.load() << std::endl;
+        }
+        std::cout << "  Results saved to:  " << current_instance_->output_json_path_ << std::endl;
+        std::cout << std::string(60, '=') << std::endl;
+        std::cout << "\nUse --resume to continue from where you left off" << std::endl;
+
+        exit(0);
     }
 }
 
@@ -337,7 +377,7 @@ void BulkProcessor::ProcessFile(const std::string& file_path) {
                     // If proxy rotation is configured, try rotating to a new proxy
                     if (!proxy_config_.rotation_url.empty()) {
                         std::lock_guard<std::mutex> console_lock(console_mutex_);
-                        std::cout << "\n⚠️  RATE LIMITED (429) - Rotating to new proxy..." << std::endl;
+                        std::cout << "\n[!] RATE LIMITED (429) - Rotating to new proxy..." << std::endl;
 
                         // Rotate proxy will test and wait for working proxy with configured timeout
                         RotateProxy(proxy_rotation_timeout_);
@@ -368,7 +408,7 @@ void BulkProcessor::ProcessFile(const std::string& file_path) {
 
                             {
                                 std::lock_guard<std::mutex> console_lock(console_mutex_);
-                                std::cout << "\n⚠️  RATE LIMITED - Pausing all threads for "
+                                std::cout << "\n[!] RATE LIMITED - Pausing all threads for "
                                          << wait_time << " seconds (attempt " << (retry_count + 1)
                                          << "/3)..." << std::endl;
                             }
@@ -380,7 +420,7 @@ void BulkProcessor::ProcessFile(const std::string& file_path) {
                             // Max retries exceeded
                             {
                                 std::lock_guard<std::mutex> console_lock(console_mutex_);
-                                std::cout << "\n❌ MAX RATE LIMIT RETRIES EXCEEDED - Stopping processing"
+                                std::cout << "\n[X] MAX RATE LIMIT RETRIES EXCEEDED - Stopping processing"
                                          << std::endl;
                             }
                             processing_complete_ = true;  // Signal threads to stop
@@ -485,8 +525,8 @@ void BulkProcessor::DisplayProgress() {
             }
             std::cout << "] " << std::fixed << std::setprecision(1) << percentage << "% ";
             std::cout << "(" << processed << "/" << total << ") ";
-            std::cout << "✓" << successful << " ✗" << failed;
-            if (skipped > 0) std::cout << " ⊘" << skipped;
+            std::cout << "OK:" << successful << " FAIL:" << failed;
+            if (skipped > 0) std::cout << " SKIP:" << skipped;
             std::cout << std::flush;
         }
 
@@ -585,7 +625,7 @@ void BulkProcessor::RotateProxy(int timeout_seconds) {
         ).count();
 
         if (elapsed >= timeout_seconds) {
-            std::cerr << "❌ Timeout (" << timeout_seconds << "s) waiting for working proxy" << std::endl;
+            std::cerr << "[X] Timeout (" << timeout_seconds << "s) waiting for working proxy" << std::endl;
             processing_complete_ = true;
             return;
         }
@@ -606,7 +646,7 @@ void BulkProcessor::RotateProxy(int timeout_seconds) {
 
         if (TestProxy(new_proxy, remaining_timeout)) {
             current_proxy_ = new_proxy;
-            std::cout << "✓ Rotated to working proxy: " << current_proxy_ << std::endl;
+            std::cout << "[OK] Rotated to working proxy: " << current_proxy_ << std::endl;
             return;
         }
 
@@ -614,7 +654,7 @@ void BulkProcessor::RotateProxy(int timeout_seconds) {
         std::this_thread::sleep_for(std::chrono::seconds(3));
     }
 
-    std::cerr << "❌ Failed to find working proxy after " << max_attempts << " attempts" << std::endl;
+    std::cerr << "[X] Failed to find working proxy after " << max_attempts << " attempts" << std::endl;
     processing_complete_ = true;
 }
 
@@ -698,10 +738,10 @@ void BulkProcessor::SetProxyConfig(const ProxyConfig& config) {
         // Test static proxy on startup
         std::cout << "Testing proxy: " << proxy_config_.host << ":" << proxy_config_.port << std::endl;
         if (!TestProxy(current_proxy_, 10)) {
-            std::cerr << "❌ Proxy test failed. Proxy is not working!" << std::endl;
+            std::cerr << "[X] Proxy test failed. Proxy is not working!" << std::endl;
             exit(1);
         }
-        std::cout << "✓ Proxy is working" << std::endl;
+        std::cout << "[OK] Proxy is working" << std::endl;
     }
 }
 
