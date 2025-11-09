@@ -615,47 +615,44 @@ void BulkProcessor::RotateProxy(int timeout_seconds) {
 
     std::cout << "Fetching new proxy from rotation URL..." << std::endl;
 
-    // Try to get and test a working proxy with specified timeout
-    auto start_time = std::chrono::steady_clock::now();
-    int max_attempts = 10;
+    // Fetch new proxy from rotation URL ONCE
+    std::string new_proxy = FetchProxyFromURL(proxy_config_.rotation_url);
+    if (new_proxy.empty()) {
+        std::cerr << "[X] Failed to fetch proxy from rotation URL" << std::endl;
+        processing_complete_ = true;
+        return;
+    }
 
-    for (int attempt = 0; attempt < max_attempts; ++attempt) {
+    std::cout << "Got new proxy: " << new_proxy << std::endl;
+    std::cout << "Waiting for proxy to come online (timeout: " << timeout_seconds << "s)..." << std::endl;
+
+    // Now test the proxy repeatedly until it works or timeout
+    auto start_time = std::chrono::steady_clock::now();
+    int test_interval = 3; // Test every 3 seconds
+
+    while (true) {
         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::steady_clock::now() - start_time
         ).count();
 
         if (elapsed >= timeout_seconds) {
-            std::cerr << "[X] Timeout (" << timeout_seconds << "s) waiting for working proxy" << std::endl;
+            std::cerr << "[X] Timeout (" << timeout_seconds << "s) - proxy never came online" << std::endl;
             processing_complete_ = true;
             return;
         }
 
-        // Fetch new proxy from rotation URL
-        std::string new_proxy = FetchProxyFromURL(proxy_config_.rotation_url);
-        if (new_proxy.empty()) {
-            std::cout << "Failed to fetch proxy, retrying in 3 seconds..." << std::endl;
-            std::this_thread::sleep_for(std::chrono::seconds(3));
-            continue;
-        }
+        std::cout << "Testing proxy... (" << elapsed << "s elapsed)" << std::endl;
 
-        std::cout << "Testing new proxy: " << new_proxy << std::endl;
-
-        // Test proxy with remaining timeout
-        int remaining_timeout = timeout_seconds - elapsed;
-        if (remaining_timeout < 5) remaining_timeout = 5;
-
-        if (TestProxy(new_proxy, remaining_timeout)) {
+        // Test proxy with short timeout per test
+        if (TestProxy(new_proxy, 10)) {
             current_proxy_ = new_proxy;
-            std::cout << "[OK] Rotated to working proxy: " << current_proxy_ << std::endl;
+            std::cout << "[OK] Proxy is online and working!" << std::endl;
             return;
         }
 
-        std::cout << "Proxy not responding, trying again in 3 seconds..." << std::endl;
-        std::this_thread::sleep_for(std::chrono::seconds(3));
+        std::cout << "Proxy not responding yet, waiting " << test_interval << " seconds..." << std::endl;
+        std::this_thread::sleep_for(std::chrono::seconds(test_interval));
     }
-
-    std::cerr << "[X] Failed to find working proxy after " << max_attempts << " attempts" << std::endl;
-    processing_complete_ = true;
 }
 
 std::string BulkProcessor::FetchProxyFromURL(const std::string& url) {
