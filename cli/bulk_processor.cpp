@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <iomanip>
+#include <random>
 #include <dirent.h>
 #include <sys/stat.h>
 #include <cstring>
@@ -623,34 +624,43 @@ std::string BulkProcessor::GetCurrentProxy() {
 }
 
 void BulkProcessor::RotateProxy(int timeout_seconds) {
-    std::lock_guard<std::mutex> lock(proxy_mutex_);
-
-    if (proxy_config_.rotation_url.empty()) {
-        // No rotation URL configured, keep current proxy
-        return;
+    {
+        std::lock_guard<std::mutex> lock(proxy_mutex_);
+        if (proxy_config_.rotation_url.empty()) {
+            // No rotation URL configured, keep current proxy
+            return;
+        }
     }
 
     // Simple flow: always rotate on 429, no cooldown
     std::cout << "Rate limited - rotating proxy IP..." << std::endl;
 
-    // Get the current IP before rotation
+    // Get the current IP before rotation (may fail if proxy is slow/rate-limited)
     std::cout << "Getting current IP before rotation..." << std::endl;
     std::string old_ip = FetchCurrentIP();
-    std::cout << "Current IP: " << old_ip << std::endl;
+    if (old_ip == "unknown") {
+        std::cout << "Could not get IP (proxy may be slow), proceeding with rotation..." << std::endl;
+    } else {
+        std::cout << "Current IP: " << old_ip << std::endl;
+    }
 
     // Call the rotation URL to trigger IP rotation on the proxy service
     std::cout << "Calling rotation URL to rotate proxy IP..." << std::endl;
-    std::string response = FetchProxyFromURL(proxy_config_.rotation_url);
-    // Response doesn't matter - it's just triggering rotation
-
+    FetchProxyFromURL(proxy_config_.rotation_url);
     std::cout << "IP rotation triggered" << std::endl;
-    std::cout << "Waiting 20 seconds for rotation to take effect..." << std::endl;
-    std::this_thread::sleep_for(std::chrono::seconds(20));
 
-    std::cout << "Now checking for IP change..." << std::endl;
+    // Random wait between 5-10 seconds for rotation to take effect
+    std::mt19937 gen(std::random_device{}());
+    std::uniform_int_distribution<> dis(5, 10);
+    int wait_seconds = dis(gen);
+
+    std::cout << "Waiting " << wait_seconds << " seconds for rotation to take effect..." << std::endl;
+    std::this_thread::sleep_for(std::chrono::seconds(wait_seconds));
+
+    std::cout << "Now waiting for proxy to come back online..." << std::endl;
     std::cout << "Timeout: " << timeout_seconds << "s" << std::endl;
 
-    // Now test the SAME proxy (current_proxy_) repeatedly until IP changes or timeout
+    // Now test the SAME proxy (current_proxy_) repeatedly until it works or timeout
     auto start_time = std::chrono::steady_clock::now();
     int test_interval = 3; // Test every 3 seconds
 
@@ -660,32 +670,30 @@ void BulkProcessor::RotateProxy(int timeout_seconds) {
         ).count();
 
         if (elapsed >= timeout_seconds) {
-            std::cerr << "[X] Timeout (" << timeout_seconds << "s) - IP never changed from " << old_ip << std::endl;
+            std::cerr << "[X] Timeout (" << timeout_seconds << "s) - proxy never came back online" << std::endl;
             processing_complete_ = true;
             return;
         }
 
-        std::cout << "Testing proxy and checking IP... (" << elapsed << "s elapsed)" << std::endl;
+        std::cout << "Testing proxy... (" << elapsed << "s elapsed)" << std::endl;
 
         // Test the SAME proxy (the proxy config doesn't change, just the IP behind it)
         bool proxy_works = TestProxy(current_proxy_, 10);
 
         if (proxy_works) {
-            // Proxy is responding, now check if IP changed
+            // Get new IP to show the change
             std::string new_ip = FetchCurrentIP();
-            std::cout << "Proxy responding, IP: " << new_ip << std::endl;
-
-            if (new_ip != old_ip && new_ip != "unknown") {
-                std::cout << "[OK] Proxy IP successfully rotated: " << old_ip << " -> " << new_ip << std::endl;
-                return;
+            if (new_ip != "unknown" && old_ip != "unknown") {
+                std::cout << "[OK] Proxy IP rotated: " << old_ip << " -> " << new_ip << std::endl;
+            } else if (new_ip != "unknown") {
+                std::cout << "[OK] Proxy is back online, new IP: " << new_ip << std::endl;
             } else {
-                std::cout << "IP hasn't changed yet (still " << new_ip << "), waiting..." << std::endl;
+                std::cout << "[OK] Proxy is back online!" << std::endl;
             }
-        } else {
-            std::cout << "Proxy not responding yet..." << std::endl;
+            return;
         }
 
-        std::cout << "Waiting " << test_interval << " seconds before next check..." << std::endl;
+        std::cout << "Proxy not responding yet, waiting " << test_interval << " seconds..." << std::endl;
         std::this_thread::sleep_for(std::chrono::seconds(test_interval));
     }
 }
@@ -733,14 +741,8 @@ void BulkProcessor::SetProxyConfig(const ProxyConfig& config) {
     std::lock_guard<std::mutex> lock(proxy_mutex_);
     proxy_config_ = config;
 
-    // If rotation URL is provided, just store it - we'll call it on 429 errors
-    if (!proxy_config_.rotation_url.empty()) {
-        std::cout << "Proxy rotation URL configured: " << proxy_config_.rotation_url << std::endl;
-        std::cout << "Will fetch and test proxy on rate limit (429) errors" << std::endl;
-        // Don't fetch or test yet - wait for 429
-
-    } else if (!proxy_config_.host.empty()) {
-        // Build proxy string from config
+    // Build proxy string from config if host is provided
+    if (!proxy_config_.host.empty()) {
         std::stringstream proxy_ss;
 
         // Add type prefix
@@ -774,6 +776,12 @@ void BulkProcessor::SetProxyConfig(const ProxyConfig& config) {
             exit(1);
         }
         std::cout << "[OK] Proxy is working" << std::endl;
+    }
+
+    // If rotation URL is provided, log it
+    if (!proxy_config_.rotation_url.empty()) {
+        std::cout << "Proxy rotation URL configured: " << proxy_config_.rotation_url << std::endl;
+        std::cout << "Will rotate IP on rate limit (429) errors" << std::endl;
     }
 }
 
@@ -858,7 +866,7 @@ std::string BulkProcessor::FetchCurrentIP() {
     curl_easy_setopt(curl, CURLOPT_URL, "https://api.country.is");
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L); // 5 second timeout
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L); // 10 second timeout
 
     // Apply proxy if configured
     if (!proxy.empty()) {

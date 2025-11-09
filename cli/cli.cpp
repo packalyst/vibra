@@ -123,6 +123,13 @@ int CLI::Run(int argc, char **argv)
         // Configure proxy if provided
         if (proxy_host || proxy_rotation_url)
         {
+            // Validate: if rotation URL is provided, proxy host must also be provided
+            if (proxy_rotation_url && !proxy_host)
+            {
+                std::cerr << "Error: --proxy-host is required when using --proxy-rotation-url" << std::endl;
+                return 1;
+            }
+
             ProxyConfig proxy_config;
 
             if (proxy_rotation_url)
@@ -130,7 +137,7 @@ int CLI::Run(int argc, char **argv)
                 // Use rotation URL
                 proxy_config.rotation_url = args::get(proxy_rotation_url);
             }
-            else if (proxy_host)
+            if (proxy_host)
             {
                 // Use static proxy configuration
                 proxy_config.host = args::get(proxy_host);
