@@ -295,38 +295,60 @@ void BulkProcessor::ProcessFile(const std::string& file_path) {
                 if (response.find("429") != std::string::npos ||
                     response.find("Too Many Requests") != std::string::npos) {
 
-                    std::lock_guard<std::mutex> rate_lock(rate_limit_mutex_);
+                    // If proxy rotation is configured, try rotating to a new proxy
+                    if (!proxy_config_.rotation_url.empty()) {
+                        std::lock_guard<std::mutex> console_lock(console_mutex_);
+                        std::cout << "\n⚠️  RATE LIMITED (429) - Rotating to new proxy..." << std::endl;
 
-                    int retry_count = rate_limit_retry_count_.fetch_add(1);
-                    int backoff_seconds[] = {30, 60, 120};  // Progressive delays
+                        // Rotate proxy will test and wait for working proxy (60s timeout)
+                        RotateProxy();
 
-                    if (retry_count < 3) {
-                        int wait_time = backoff_seconds[retry_count];
-                        rate_limited_ = true;
-                        rate_limit_until_ = std::chrono::steady_clock::now() +
-                                           std::chrono::seconds(wait_time);
-
-                        {
-                            std::lock_guard<std::mutex> console_lock(console_mutex_);
-                            std::cout << "\n⚠️  RATE LIMITED - Pausing all threads for "
-                                     << wait_time << " seconds (attempt " << (retry_count + 1)
-                                     << "/3)..." << std::endl;
+                        // Check if rotation succeeded
+                        if (processing_complete_.load()) {
+                            result.success = false;
+                            result.error_message = "Failed to rotate to working proxy";
+                            stats_.failed++;
+                        } else {
+                            // Successfully rotated, mark as failed but will retry with new proxy
+                            result.success = false;
+                            result.error_message = "Rate limited - rotated proxy";
+                            stats_.failed++;
                         }
-
-                        result.success = false;
-                        result.error_message = "Rate limited - will retry";
-                        stats_.failed++;
                     } else {
-                        // Max retries exceeded
-                        {
-                            std::lock_guard<std::mutex> console_lock(console_mutex_);
-                            std::cout << "\n❌ MAX RATE LIMIT RETRIES EXCEEDED - Stopping processing"
-                                     << std::endl;
+                        // No proxy rotation - use standard backoff
+                        std::lock_guard<std::mutex> rate_lock(rate_limit_mutex_);
+
+                        int retry_count = rate_limit_retry_count_.fetch_add(1);
+                        int backoff_seconds[] = {30, 60, 120};  // Progressive delays
+
+                        if (retry_count < 3) {
+                            int wait_time = backoff_seconds[retry_count];
+                            rate_limited_ = true;
+                            rate_limit_until_ = std::chrono::steady_clock::now() +
+                                               std::chrono::seconds(wait_time);
+
+                            {
+                                std::lock_guard<std::mutex> console_lock(console_mutex_);
+                                std::cout << "\n⚠️  RATE LIMITED - Pausing all threads for "
+                                         << wait_time << " seconds (attempt " << (retry_count + 1)
+                                         << "/3)..." << std::endl;
+                            }
+
+                            result.success = false;
+                            result.error_message = "Rate limited - will retry";
+                            stats_.failed++;
+                        } else {
+                            // Max retries exceeded
+                            {
+                                std::lock_guard<std::mutex> console_lock(console_mutex_);
+                                std::cout << "\n❌ MAX RATE LIMIT RETRIES EXCEEDED - Stopping processing"
+                                         << std::endl;
+                            }
+                            processing_complete_ = true;  // Signal threads to stop
+                            result.success = false;
+                            result.error_message = "Rate limit exceeded - max retries reached";
+                            stats_.failed++;
                         }
-                        processing_complete_ = true;  // Signal threads to stop
-                        result.success = false;
-                        result.error_message = "Rate limit exceeded - max retries reached";
-                        stats_.failed++;
                     }
                 } else {
                     result.success = false;
@@ -512,12 +534,49 @@ void BulkProcessor::RotateProxy() {
         return;
     }
 
-    // Fetch new proxy from rotation URL
-    std::string new_proxy = FetchProxyFromURL(proxy_config_.rotation_url);
-    if (!new_proxy.empty()) {
-        current_proxy_ = new_proxy;
-        std::cout << "Rotated to new proxy: " << current_proxy_ << std::endl;
+    std::cout << "Fetching new proxy from rotation URL..." << std::endl;
+
+    // Try to get and test a working proxy with 60 second total timeout
+    auto start_time = std::chrono::steady_clock::now();
+    int max_attempts = 10;
+
+    for (int attempt = 0; attempt < max_attempts; ++attempt) {
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now() - start_time
+        ).count();
+
+        if (elapsed >= 60) {
+            std::cerr << "❌ Timeout (60s) waiting for working proxy" << std::endl;
+            processing_complete_ = true;
+            return;
+        }
+
+        // Fetch new proxy from rotation URL
+        std::string new_proxy = FetchProxyFromURL(proxy_config_.rotation_url);
+        if (new_proxy.empty()) {
+            std::cout << "Failed to fetch proxy, retrying in 3 seconds..." << std::endl;
+            std::this_thread::sleep_for(std::chrono::seconds(3));
+            continue;
+        }
+
+        std::cout << "Testing new proxy: " << new_proxy << std::endl;
+
+        // Test proxy with remaining timeout
+        int remaining_timeout = 60 - elapsed;
+        if (remaining_timeout < 5) remaining_timeout = 5;
+
+        if (TestProxy(new_proxy, remaining_timeout)) {
+            current_proxy_ = new_proxy;
+            std::cout << "✓ Rotated to working proxy: " << current_proxy_ << std::endl;
+            return;
+        }
+
+        std::cout << "Proxy not responding, trying again in 3 seconds..." << std::endl;
+        std::this_thread::sleep_for(std::chrono::seconds(3));
     }
+
+    std::cerr << "❌ Failed to find working proxy after " << max_attempts << " attempts" << std::endl;
+    processing_complete_ = true;
 }
 
 std::string BulkProcessor::FetchProxyFromURL(const std::string& url) {
@@ -566,9 +625,18 @@ void BulkProcessor::SetProxyConfig(const ProxyConfig& config) {
     // If rotation URL is provided, fetch initial proxy
     if (!proxy_config_.rotation_url.empty()) {
         current_proxy_ = FetchProxyFromURL(proxy_config_.rotation_url);
-        if (!current_proxy_.empty()) {
-            std::cout << "Initial proxy from rotation URL: " << current_proxy_ << std::endl;
+        if (current_proxy_.empty()) {
+            std::cerr << "❌ Failed to fetch proxy from rotation URL" << std::endl;
+            exit(1);
         }
+
+        std::cout << "Testing proxy from rotation URL: " << current_proxy_ << std::endl;
+        if (!TestProxy(current_proxy_, 10)) {
+            std::cerr << "❌ Proxy test failed. Proxy is not working!" << std::endl;
+            exit(1);
+        }
+        std::cout << "✓ Proxy is working: " << current_proxy_ << std::endl;
+
     } else if (!proxy_config_.host.empty()) {
         // Build proxy string from config
         std::stringstream proxy_ss;
@@ -596,9 +664,69 @@ void BulkProcessor::SetProxyConfig(const ProxyConfig& config) {
         }
 
         current_proxy_ = proxy_ss.str();
-        std::cout << "Using configured proxy: " << proxy_config_.host << ":"
-                  << proxy_config_.port << std::endl;
+
+        std::cout << "Testing proxy: " << proxy_config_.host << ":" << proxy_config_.port << std::endl;
+        if (!TestProxy(current_proxy_, 10)) {
+            std::cerr << "❌ Proxy test failed. Proxy is not working!" << std::endl;
+            exit(1);
+        }
+        std::cout << "✓ Proxy is working" << std::endl;
     }
+}
+
+bool BulkProcessor::TestProxy(const std::string& proxy, int timeout_seconds) {
+    if (proxy.empty()) {
+        return true; // No proxy means direct connection, always "works"
+    }
+
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        return false;
+    }
+
+    std::string response;
+
+    auto writeCallback = +[](void* contents, size_t size, size_t nmemb, void* userp) -> size_t {
+        std::string* buffer = reinterpret_cast<std::string*>(userp);
+        size_t realsize = size * nmemb;
+        buffer->append(reinterpret_cast<char*>(contents), realsize);
+        return realsize;
+    };
+
+    curl_easy_setopt(curl, CURLOPT_URL, "https://api.country.is");
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, (long)timeout_seconds);
+
+    // Parse and apply proxy
+    std::string proxy_str = proxy;
+    curl_proxytype proxy_type = CURLPROXY_HTTP;
+
+    if (proxy_str.find("socks5://") == 0) {
+        proxy_type = CURLPROXY_SOCKS5;
+        proxy_str = proxy_str.substr(9);
+    } else if (proxy_str.find("http://") == 0) {
+        proxy_str = proxy_str.substr(7);
+    }
+
+    std::string auth;
+    size_t at_pos = proxy_str.find('@');
+    if (at_pos != std::string::npos) {
+        auth = proxy_str.substr(0, at_pos);
+        proxy_str = proxy_str.substr(at_pos + 1);
+    }
+
+    curl_easy_setopt(curl, CURLOPT_PROXY, proxy_str.c_str());
+    curl_easy_setopt(curl, CURLOPT_PROXYTYPE, proxy_type);
+
+    if (!auth.empty()) {
+        curl_easy_setopt(curl, CURLOPT_PROXYUSERPWD, auth.c_str());
+    }
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+
+    return (res == CURLE_OK);
 }
 
 std::string BulkProcessor::FetchCurrentIP() {

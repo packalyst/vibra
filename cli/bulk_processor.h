@@ -69,6 +69,9 @@ private:
     // IP detection
     std::string FetchCurrentIP();
 
+    // Proxy testing
+    bool TestProxy(const std::string& proxy, int timeout_seconds = 10);
+
     // Processing
     void ProcessFile(const std::string& file_path);
     void WorkerThread();
