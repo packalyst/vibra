@@ -394,8 +394,10 @@ void BulkProcessor::ProcessFile(const std::string& file_path) {
 
                     // If proxy rotation is configured, try rotating to a new proxy
                     if (!proxy_config_.rotation_url.empty()) {
-                        std::lock_guard<std::mutex> console_lock(console_mutex_);
-                        std::cout << "\n[!] RATE LIMITED (429) - Rotating to new proxy..." << std::endl;
+                        {
+                            std::lock_guard<std::mutex> console_lock(console_mutex_);
+                            std::cout << "\n[!] RATE LIMITED (429) - Rotating to new proxy..." << std::endl;
+                        }
 
                         // Rotate proxy will test and wait for working proxy with configured timeout
                         RotateProxy(proxy_rotation_timeout_);
@@ -406,10 +408,27 @@ void BulkProcessor::ProcessFile(const std::string& file_path) {
                             result.error_message = "Failed to rotate to working proxy";
                             stats_.failed++;
                         } else {
-                            // Successfully rotated, mark as failed but will retry with new proxy
-                            result.success = false;
-                            result.error_message = "Rate limited - rotated proxy";
-                            stats_.failed++;
+                            // Successfully rotated, retry the same file with new proxy IP
+                            std::lock_guard<std::mutex> console_lock(console_mutex_);
+                            std::cout << "Retrying file with rotated proxy..." << std::endl;
+
+                            // Retry recognition with new proxy
+                            proxy = GetCurrentProxy();
+                            response = Shazam::Recognize(fingerprint, proxy);
+                            result.ip_address = FetchCurrentIP();
+
+                            // Validate retry response
+                            if (IsValidJSON(response)) {
+                                result.success = true;
+                                result.json_response = response;
+                                stats_.successful++;
+                                rate_limit_retry_count_ = 0;
+                            } else {
+                                // Still failed after rotation
+                                result.success = false;
+                                result.error_message = "Failed after proxy rotation";
+                                stats_.failed++;
+                            }
                         }
                     } else {
                         // No proxy rotation - use standard backoff
