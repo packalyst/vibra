@@ -188,7 +188,18 @@ int CLI::Run(int argc, char **argv)
     }
     else if (recognize)
     {
-        std::cout << Shazam::Recognize(fingerprint) << std::endl;
+        std::string response = Shazam::Recognize(fingerprint);
+
+        // Inject offsetms into the response JSON
+        // Find the closing brace of the response and insert vibra_offset field before it
+        size_t last_brace = response.rfind('}');
+        if (last_brace != std::string::npos && fingerprint->offset_ms > 0)
+        {
+            std::string offset_field = ",\"vibra_offset_ms\":" + std::to_string(fingerprint->offset_ms);
+            response.insert(last_brace, offset_field);
+        }
+
+        std::cout << response << std::endl;
     }
     return 0;
 }

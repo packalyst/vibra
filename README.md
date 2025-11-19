@@ -21,6 +21,7 @@
 * **vibra** is a library and CLI tool for music recognition using the **unofficial** Shazam API.
 * It analyzes audio files, generates fingerprints, and queries Shazam's database for song identification.
 * **Key features**:
+    * **Smart Segment Selection**: Automatically analyzes audio to find the most distinctive part for fingerprinting, significantly improving recognition accuracy.
     * Fast and lightweight, optimized for various platforms, including embedded devices.
     * Cross-platform support: Linux, Windows, macOS, **WebAssembly**, and **FFI bindings** for other languages.
     * Flexible input processing: native support for WAV files, optional FFmpeg for other formats.
@@ -33,6 +34,36 @@
     * Desktop and server environments for high-performance recognition
     * WebAssembly for web-based use
     * Additional support for iOS, Android, and other languages via FFI bindings
+
+### Smart Segment Selection
+
+vibra features an intelligent audio analysis system that automatically selects the optimal segment for fingerprinting:
+
+* **Multi-position Analysis**: Tests 3 strategic positions in each audio file:
+    * 5 seconds (skips fade-ins and silence)
+    * 30 seconds (skips typical intros)
+    * 50% point (middle of song, often the chorus)
+
+* **Audio Quality Scoring**: Each segment is scored based on:
+    * **RMS Energy**: Measures loudness and activity level
+    * **Spectral Variance**: Measures frequency complexity and instrument diversity
+    * Combined weighted score (60% energy + 40% variance)
+
+* **Best Segment Selection**: Automatically fingerprints the highest-scoring segment, ensuring:
+    * Better recognition of songs with quiet intros or outros
+    * More accurate matching by analyzing distinctive parts
+    * Improved success rate compared to fixed-offset approaches
+
+* **Output Transparency**: The JSON response includes `vibra_offset_ms` field showing where fingerprinting started:
+```json
+{
+  "matches": [...],
+  "track": {...},
+  "vibra_offset_ms": 30000
+}
+```
+
+This smart selection dramatically improves recognition accuracy without requiring any user configuration.
 
 ### Live Demo
 * You can try the music recognition with the **[WebAssembly version of vibra here](https://bayernmuller.github.io/vibra-live-demo/)**

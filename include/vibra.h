@@ -15,6 +15,7 @@ struct Fingerprint
 {
     std::string uri;        /**< The URI associated with the fingerprint. */
     unsigned int sample_ms; /**< The sample duration in milliseconds. */
+    unsigned int offset_ms; /**< The offset in milliseconds where fingerprinting started. */
 };
 
 /**
