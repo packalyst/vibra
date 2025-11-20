@@ -12,20 +12,55 @@ Fingerprint *_get_fingerprint_from_wav(const Wav &wav);
 
 Fingerprint *_get_fingerprint_from_low_quality_pcm(const LowQualityTrack &pcm, std::uint32_t offset_seconds = 0);
 
+// Escape shell argument for safe use with popen
+static std::string escape_shell_arg(const std::string& arg)
+{
+#ifdef _MSC_VER
+    // Windows: use double quotes and escape internal quotes
+    std::string result = "\"";
+    for (char c : arg)
+    {
+        if (c == '"')
+        {
+            result += "\\\"";
+        }
+        else if (c == '\\')
+        {
+            result += "\\\\";
+        }
+        else
+        {
+            result += c;
+        }
+    }
+    result += "\"";
+    return result;
+#else
+    // Unix/Linux: use single quotes and handle embedded single quotes
+    std::string result = "'";
+    for (char c : arg)
+    {
+        if (c == '\'')
+        {
+            // Close quote, add escaped quote, reopen quote
+            result += "'\\''";
+        }
+        else
+        {
+            result += c;
+        }
+    }
+    result += "'";
+    return result;
+#endif
+}
+
 // Get song duration using ffprobe
 static double get_song_duration(const std::string &file_path)
 {
     std::string ffprobe_cmd = "ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 ";
 
-#ifdef _MSC_VER
-    // Windows: escape quotes
-    std::string escaped_path = "\"" + file_path + "\"";
-#else
-    // Unix: use single quotes
-    std::string escaped_path = "'" + file_path + "'";
-#endif
-
-    ffprobe_cmd += escaped_path;
+    ffprobe_cmd += escape_shell_arg(file_path);
     ffprobe_cmd += " 2>/dev/null";
 
     FILE *pipe = popen(ffprobe_cmd.c_str(), "r");
