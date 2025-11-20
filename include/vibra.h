@@ -95,6 +95,26 @@ unsigned int vibra_get_sample_ms_from_fingerprint(Fingerprint *fingerprint);
  * @param fingerprint Pointer to the fingerprint.
  */
 void vibra_free_fingerprint(Fingerprint *fingerprint);
+
+/**
+ * @brief Get the duration of an audio file in seconds.
+ *
+ * @param music_file_path The path to the music file.
+ * @return double The duration in seconds, or 0 if unable to determine.
+ */
+double vibra_get_duration(const char *music_file_path);
+
+/**
+ * @brief Generate a fingerprint from a specific offset in a music file.
+ *
+ * @param music_file_path The path to the music file.
+ * @param offset_seconds The offset in seconds to start fingerprinting.
+ * @return Fingerprint* Pointer to the generated fingerprint.
+ *
+ * @note The returned pointer must be freed after use. See vibra_free_fingerprint().
+ */
+Fingerprint *vibra_get_fingerprint_from_offset(const char *music_file_path, unsigned int offset_seconds);
+
 } // extern "C"
 
 #endif // INCLUDE_VIBRA_H_

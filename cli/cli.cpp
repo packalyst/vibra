@@ -80,6 +80,20 @@ int CLI::Run(int argc, char **argv)
     args::ValueFlag<std::string> proxy_rotation_url(proxy_options, "url",
                                                     "URL to fetch new proxy from for rotation",
                                                     {"proxy-rotation-url"});
+    args::Flag use_tor(proxy_options, "tor",
+                       "Use Tor as proxy (SOCKS5 on 127.0.0.1:9050)",
+                       {"tor"});
+
+    args::Group recognition_options(parser, "Recognition options:");
+    args::Flag precise_mode(recognition_options, "precise",
+                            "Use multiple segments for more accurate recognition",
+                            {"precise"});
+    args::Flag apple_music(recognition_options, "apple-music",
+                           "Fetch additional metadata from Apple Music",
+                           {"apple-music"});
+    args::Flag unified_output(recognition_options, "unified",
+                              "Output clean unified JSON format",
+                              {"unified"});
 
     try
     {
@@ -164,10 +178,51 @@ int CLI::Run(int argc, char **argv)
 
     // Handle single file recognition mode
     Fingerprint *fingerprint = nullptr;
+    std::vector<Fingerprint*> fingerprints;  // For precise mode
+    std::string file_path;
+
     if (music_file)
     {
-        std::string file = args::get(music_file);
-        fingerprint = getFingerprintFromMusicFile(file);
+        file_path = args::get(music_file);
+
+        if (precise_mode && recognize)
+        {
+            // Generate multiple fingerprints from different offsets
+            double duration = vibra_get_duration(file_path.c_str());
+
+            // Adaptive skip based on duration
+            unsigned int skip_start;
+            if (duration <= 60) {
+                skip_start = 3;
+            } else if (duration <= 180) {
+                skip_start = 10;
+            } else {
+                skip_start = 15;
+            }
+
+            // Generate up to 5 fingerprints
+            unsigned int max_segments = 5;
+            unsigned int segment_duration = 12;
+            unsigned int offset = skip_start;
+
+            while (fingerprints.size() < max_segments &&
+                   offset + segment_duration <= static_cast<unsigned int>(duration))
+            {
+                Fingerprint* fp = vibra_get_fingerprint_from_offset(file_path.c_str(), offset);
+                fingerprints.push_back(fp);
+                offset += segment_duration;
+            }
+
+            if (fingerprints.empty())
+            {
+                std::cerr << "Could not generate fingerprints" << std::endl;
+                return 1;
+            }
+        }
+        else
+        {
+            fingerprint = getFingerprintFromMusicFile(file_path);
+        }
     }
     else if (chunk_seconds && sample_rate && channels && bits_per_sample)
     {
@@ -188,18 +243,99 @@ int CLI::Run(int argc, char **argv)
     }
     else if (recognize)
     {
-        std::string response = Shazam::Recognize(fingerprint);
+        // Build proxy string
+        std::string proxy_string;
+        bool using_tor = false;
 
-        // Inject offsetms into the response JSON
-        // Find the closing brace of the response and insert vibra_offset field before it
-        size_t last_brace = response.rfind('}');
-        if (last_brace != std::string::npos && fingerprint->offset_ms > 0)
+        if (proxy_host)
         {
-            std::string offset_field = ",\"vibra_offset_ms\":" + std::to_string(fingerprint->offset_ms);
-            response.insert(last_brace, offset_field);
+            // User-provided proxy takes priority
+            std::string type = proxy_type ? args::get(proxy_type) : "http";
+            int port = proxy_port ? args::get(proxy_port) : 8080;
+
+            proxy_string = type + "://";
+            if (proxy_user && proxy_pass)
+            {
+                proxy_string += args::get(proxy_user) + ":" + args::get(proxy_pass) + "@";
+            }
+            proxy_string += args::get(proxy_host) + ":" + std::to_string(port);
+        }
+        else if (use_tor)
+        {
+            // Use Tor
+            proxy_string = "socks5://127.0.0.1:9050";
+            using_tor = true;
+        }
+
+        // Fetch exit IP if using proxy/Tor
+        std::string exit_ip;
+        if (!proxy_string.empty())
+        {
+            exit_ip = Shazam::FetchExitIP(proxy_string);
+        }
+
+        std::string response;
+
+        if (!fingerprints.empty())
+        {
+            // Precise mode - use multiple fingerprints
+            response = Shazam::RecognizePrecise(fingerprints, proxy_string);
+
+            // Clean up fingerprints
+            for (auto fp : fingerprints)
+            {
+                vibra_free_fingerprint(fp);
+            }
+        }
+        else
+        {
+            // Normal mode
+            response = Shazam::Recognize(fingerprint, proxy_string);
+        }
+
+        // Fetch Apple Music metadata if requested
+        if (apple_music)
+        {
+            response = Shazam::FetchAppleMusicMetadata(response, proxy_string);
+        }
+
+        // Inject fields into the response JSON
+        size_t last_brace = response.rfind('}');
+        if (last_brace != std::string::npos)
+        {
+            std::string extra_fields;
+
+            if (fingerprint && fingerprint->offset_ms > 0)
+            {
+                extra_fields += ",\"vibra_offset_ms\":" + std::to_string(fingerprint->offset_ms);
+            }
+
+            if (!exit_ip.empty())
+            {
+                extra_fields += ",\"vibra_exit_ip\":\"" + exit_ip + "\"";
+            }
+
+            if (using_tor)
+            {
+                extra_fields += ",\"vibra_tor\":true";
+            }
+
+            response.insert(last_brace, extra_fields);
+        }
+
+        // Build unified response if requested
+        if (unified_output)
+        {
+            response = Shazam::BuildUnifiedResponse(response);
         }
 
         std::cout << response << std::endl;
+
+        // Request new Tor circuit for next run
+        if (using_tor)
+        {
+            Shazam::RequestNewTorCircuit();
+        }
     }
     return 0;
 }

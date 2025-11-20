@@ -65,6 +65,124 @@ vibra features an intelligent audio analysis system that automatically selects t
 
 This smart selection dramatically improves recognition accuracy without requiring any user configuration.
 
+### Precise Mode (Multi-Segment Recognition)
+
+For difficult tracks (mashups, remixes, songs with long intros), vibra offers a precise mode that checks multiple segments and uses voting:
+
+```bash
+vibra --recognize --precise --file song.mp3
+```
+
+* **Adaptive Skip**: Skips intro based on song duration (3s for short, 10s for medium, 15s for long songs)
+* **Sequential Segments**: Sends up to 5 segments of 12 seconds each
+* **Early Termination**: Returns immediately when 2 consecutive segments match the same song
+* **Voting System**: If 2 out of 3+ segments match, returns confident result
+* **Connection Reuse**: All requests use the same HTTP connection for speed
+
+The response includes confidence information:
+```json
+{
+  "track": {...},
+  "vibra_segments_checked": 2,
+  "vibra_confident": true
+}
+```
+
+### Apple Music Enrichment
+
+Fetch additional metadata from Apple Music for richer results:
+
+```bash
+vibra --recognize --apple-music --file song.mp3
+```
+
+This adds:
+* **Exact release date** (not just year)
+* **Track duration** in ISO 8601 format
+* **Genre array** (multiple genres)
+* **Individual artists** (separated from collaborations)
+* **High-resolution artwork** (1200x630)
+* **Preview audio URL**
+
+### Unified JSON Output
+
+Get a clean, standardized JSON response with all metadata organized:
+
+```bash
+vibra --recognize --precise --apple-music --unified --file song.mp3
+```
+
+Output structure:
+```json
+{
+  "status": "success",
+  "result": {
+    "title": "Song Title",
+    "artist": "Main Artist",
+    "full_artist": "Main Artist & Featured Artist",
+    "feat_artists": ["Featured Artist"],
+    "album": "Album Name",
+    "label": "Record Label",
+    "year": 2024,
+    "genre": "Pop",
+    "isrc": "USRC12345678",
+    "release_date": "2024-01-15",
+    "duration": "PT3M45S",
+    "genres": ["Pop", "Dance"],
+    "images": {
+      "coverart": "...",
+      "coverart_hq": "...",
+      "background": "...",
+      "large": "..."
+    },
+    "external_ids": {
+      "shazam": "123456",
+      "shazam_artist": "789",
+      "apple_music": "1234567890",
+      "apple_music_album": "9876543210",
+      "apple_music_artist": "456789123"
+    },
+    "links": {
+      "shazam": "https://www.shazam.com/track/...",
+      "apple_music": "https://music.apple.com/song/...",
+      "preview": "https://audio-ssl.itunes.apple.com/...",
+      "spotify": "spotify:search:...",
+      "youtube_music": "https://music.youtube.com/search?q=...",
+      "deezer": "deezer-query://..."
+    },
+    "match": {
+      "offset": 27.91,
+      "timeskew": -0.00014,
+      "frequencyskew": 0.0
+    },
+    "related_tracks_url": "https://cdn.shazam.com/...",
+    "request": {
+      "timestamp": 1234567890000,
+      "timezone": "Europe/London",
+      "location": {"latitude": 51.5, "longitude": -0.1, "altitude": 100}
+    },
+    "vibra": {
+      "segments_checked": 2,
+      "confident": true
+    }
+  }
+}
+```
+
+### Tor Support
+
+Use Tor for anonymous recognition (requires Tor service running on port 9050):
+
+```bash
+vibra --recognize --tor --file song.mp3
+```
+
+* Uses SOCKS5 proxy at 127.0.0.1:9050
+* Automatically requests new circuit after each recognition
+* Shows exit IP in response
+
+**Note**: Shazam may block some Tor exit nodes.
+
 ### Live Demo
 * You can try the music recognition with the **[WebAssembly version of vibra here](https://bayernmuller.github.io/vibra-live-demo/)**
 * The source code for the demo is available at [vibra-live-demo](https://github.com/bayernmuller/vibra-live-demo)
@@ -163,6 +281,11 @@ Options:
       --proxy-pass                          Proxy password
       --proxy-type                          Proxy type: http or socks5 (default: http)
       --proxy-rotation-url                  URL to fetch new proxy from for rotation
+      --tor                                 Use Tor as proxy (SOCKS5 on 127.0.0.1:9050)
+  Recognition options:
+      --precise                             Use multiple segments for more accurate recognition
+      --apple-music                         Fetch additional metadata from Apple Music
+      --unified                             Output clean unified JSON format
 ```
 
 </details>

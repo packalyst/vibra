@@ -231,6 +231,19 @@ void vibra_free_fingerprint(Fingerprint *fingerprint)
     delete fingerprint;
 }
 
+double vibra_get_duration(const char *music_file_path)
+{
+    return get_song_duration(music_file_path);
+}
+
+Fingerprint *vibra_get_fingerprint_from_offset(const char *music_file_path, unsigned int offset_seconds)
+{
+    std::string path = music_file_path;
+
+    LowQualityTrack pcm = ffmpeg::FFmpegWrapper::ConvertToLowQaulityPcm(path, offset_seconds, MAX_DURATION_SECONDS);
+    return _get_fingerprint_from_low_quality_pcm(pcm, offset_seconds);
+}
+
 Fingerprint *_get_fingerprint_from_wav(const Wav &wav)
 {
     LowQualityTrack pcm = Downsampler::GetLowQualityPCM(wav);
