@@ -412,6 +412,7 @@ std::string Shazam::RecognizePrecise(const std::vector<Fingerprint*>& fingerprin
                 size_t last_brace = final_response.rfind('}');
                 if (last_brace != std::string::npos) {
                     std::string extra = ",\"vibra_segments_checked\":" + std::to_string(results.size()) +
+                                       ",\"vibra_segment_matches\":2" +
                                        ",\"vibra_confident\":true";
                     final_response.insert(last_brace, extra);
                 }
@@ -442,6 +443,7 @@ std::string Shazam::RecognizePrecise(const std::vector<Fingerprint*>& fingerprin
                         size_t last_brace = final_response.rfind('}');
                         if (last_brace != std::string::npos) {
                             std::string extra = ",\"vibra_segments_checked\":" + std::to_string(results.size()) +
+                                               ",\"vibra_segment_matches\":" + std::to_string(pair.second) +
                                                ",\"vibra_confident\":true";
                             final_response.insert(last_brace, extra);
                         }
@@ -1058,6 +1060,7 @@ std::string Shazam::BuildUnifiedResponse(const std::string& response)
 
     // === Vibra Info ===
     std::string segments = extractJsonNumber(response, "vibra_segments_checked");
+    std::string segment_matches = extractJsonNumber(response, "vibra_segment_matches");
     std::string offset_ms = extractJsonNumber(response, "vibra_offset_ms");
     bool confident = response.find("\"vibra_confident\":true") != std::string::npos;
 
@@ -1068,6 +1071,12 @@ std::string Shazam::BuildUnifiedResponse(const std::string& response)
         if (!segments.empty())
         {
             unified << "\"segments_checked\":" << segments;
+            first = false;
+        }
+        if (!segment_matches.empty())
+        {
+            if (!first) unified << ",";
+            unified << "\"segment_matches\":" << segment_matches;
             first = false;
         }
         if (!offset_ms.empty())
