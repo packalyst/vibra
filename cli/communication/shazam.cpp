@@ -401,14 +401,15 @@ std::string Shazam::RecognizePrecise(const std::vector<Fingerprint*>& fingerprin
 
         // Check for early termination conditions
         if (results.size() >= 2) {
-            // Check for 2 consecutive matches
+            // Check if first result (smart-analyzed primary) matches current
+            // Primary segment is trusted more as it was chosen for optimal audio quality
             if (!result.track_id.empty() &&
-                result.track_id == results[results.size() - 2].track_id) {
-                // Return confident match
+                result.track_id == results[0].track_id) {
+                // Primary confirmed - return confident match
                 curl_slist_free_all(headers);
                 curl_easy_cleanup(curl);
 
-                std::string final_response = result.response;
+                std::string final_response = results[0].response;
                 size_t last_brace = final_response.rfind('}');
                 if (last_brace != std::string::npos) {
                     std::string extra = ",\"vibra_segments_checked\":" + std::to_string(results.size()) +
@@ -419,37 +420,81 @@ std::string Shazam::RecognizePrecise(const std::vector<Fingerprint*>& fingerprin
                 return final_response;
             }
 
-            // Check for 2 out of 3 (or more) same matches
+            // If we have 3 results and primary differs from both others, still trust primary
+            // unless both verification segments agree on something else
             if (results.size() >= 3) {
                 std::map<std::string, int> vote_count;
-                std::map<std::string, size_t> track_index;
 
                 for (size_t j = 0; j < results.size(); j++) {
                     if (!results[j].track_id.empty()) {
                         vote_count[results[j].track_id]++;
-                        track_index[results[j].track_id] = j;
                     }
                 }
 
-                // Find if any track has 2+ votes
-                for (const auto& pair : vote_count) {
-                    if (pair.second >= 2) {
-                        // Return confident match
-                        curl_slist_free_all(headers);
-                        curl_easy_cleanup(curl);
+                // Check if primary has any support
+                std::string primary_track = results[0].track_id;
+                if (!primary_track.empty() && vote_count[primary_track] >= 2) {
+                    // Primary confirmed
+                    curl_slist_free_all(headers);
+                    curl_easy_cleanup(curl);
 
-                        size_t idx = track_index[pair.first];
-                        std::string final_response = results[idx].response;
-                        size_t last_brace = final_response.rfind('}');
-                        if (last_brace != std::string::npos) {
-                            std::string extra = ",\"vibra_segments_checked\":" + std::to_string(results.size()) +
-                                               ",\"vibra_segment_matches\":" + std::to_string(pair.second) +
-                                               ",\"vibra_confident\":true";
-                            final_response.insert(last_brace, extra);
-                        }
-                        return final_response;
+                    std::string final_response = results[0].response;
+                    size_t last_brace = final_response.rfind('}');
+                    if (last_brace != std::string::npos) {
+                        std::string extra = ",\"vibra_segments_checked\":" + std::to_string(results.size()) +
+                                           ",\"vibra_segment_matches\":" + std::to_string(vote_count[primary_track]) +
+                                           ",\"vibra_confident\":true";
+                        final_response.insert(last_brace, extra);
+                    }
+                    return final_response;
+                }
+
+                // Only override primary if ALL other segments agree on something else
+                // (unanimous disagreement with primary)
+                bool all_others_agree = true;
+                std::string agreed_track;
+                for (size_t j = 1; j < results.size(); j++) {
+                    if (results[j].track_id.empty()) {
+                        all_others_agree = false;
+                        break;
+                    }
+                    if (agreed_track.empty()) {
+                        agreed_track = results[j].track_id;
+                    } else if (results[j].track_id != agreed_track) {
+                        all_others_agree = false;
+                        break;
                     }
                 }
+
+                if (all_others_agree && !agreed_track.empty() && agreed_track != primary_track) {
+                    // All verification segments unanimously disagree with primary
+                    curl_slist_free_all(headers);
+                    curl_easy_cleanup(curl);
+
+                    std::string final_response = results[1].response;
+                    size_t last_brace = final_response.rfind('}');
+                    if (last_brace != std::string::npos) {
+                        std::string extra = ",\"vibra_segments_checked\":" + std::to_string(results.size()) +
+                                           ",\"vibra_segment_matches\":" + std::to_string(results.size() - 1) +
+                                           ",\"vibra_confident\":true";
+                        final_response.insert(last_brace, extra);
+                    }
+                    return final_response;
+                }
+
+                // No unanimous agreement - trust primary (smart-analyzed segment)
+                curl_slist_free_all(headers);
+                curl_easy_cleanup(curl);
+
+                std::string final_response = results[0].response;
+                size_t last_brace = final_response.rfind('}');
+                if (last_brace != std::string::npos) {
+                    std::string extra = ",\"vibra_segments_checked\":" + std::to_string(results.size()) +
+                                       ",\"vibra_segment_matches\":1" +
+                                       ",\"vibra_confident\":false";
+                    final_response.insert(last_brace, extra);
+                }
+                return final_response;
             }
         }
     }

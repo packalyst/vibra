@@ -187,31 +187,39 @@ int CLI::Run(int argc, char **argv)
 
         if (precise_mode && recognize)
         {
-            // Generate multiple fingerprints from different offsets
+            // Generate fingerprints for verification
+            // Strategy: Use smart-analyzed primary segment, then verify with distant segments
             double duration = vibra_get_duration(file_path.c_str());
-
-            // Adaptive skip based on duration
-            unsigned int skip_start;
-            if (duration <= 60) {
-                skip_start = 3;
-            } else if (duration <= 180) {
-                skip_start = 10;
-            } else {
-                skip_start = 15;
-            }
-
-            // Generate up to 5 fingerprints
-            unsigned int max_segments = 5;
             unsigned int segment_duration = 12;
-            unsigned int offset = skip_start;
 
-            while (fingerprints.size() < max_segments &&
-                   offset + segment_duration <= static_cast<unsigned int>(duration))
-            {
-                Fingerprint* fp = vibra_get_fingerprint_from_offset(file_path.c_str(), offset);
-                fingerprints.push_back(fp);
-                offset += segment_duration;
+            // Primary: Use same smart analysis as default mode (tests 5s, 30s, middle and picks best)
+            Fingerprint* fp1 = vibra_get_fingerprint_from_music_file(file_path.c_str());
+            fingerprints.push_back(fp1);
+
+            if (duration >= 45) {
+                // Verification: Use middle of song (away from intro/outro)
+                unsigned int verify_offset = static_cast<unsigned int>(duration / 2);
+                if (verify_offset + segment_duration <= static_cast<unsigned int>(duration)) {
+                    Fingerprint* fp2 = vibra_get_fingerprint_from_offset(file_path.c_str(), verify_offset);
+                    fingerprints.push_back(fp2);
+                }
+
+                // Tie-breaker: Use 2/3 point of song
+                unsigned int tiebreaker_offset = static_cast<unsigned int>(duration * 0.66);
+                if (tiebreaker_offset + segment_duration <= static_cast<unsigned int>(duration) &&
+                    tiebreaker_offset != verify_offset) {
+                    Fingerprint* fp3 = vibra_get_fingerprint_from_offset(file_path.c_str(), tiebreaker_offset);
+                    fingerprints.push_back(fp3);
+                }
+            } else if (duration >= 25) {
+                // Short song: verify with middle
+                unsigned int verify_offset = static_cast<unsigned int>(duration / 2);
+                if (verify_offset + segment_duration <= static_cast<unsigned int>(duration)) {
+                    Fingerprint* fp2 = vibra_get_fingerprint_from_offset(file_path.c_str(), verify_offset);
+                    fingerprints.push_back(fp2);
+                }
             }
+            // Very short songs: single segment is enough
 
             if (fingerprints.empty())
             {
