@@ -25,6 +25,7 @@ class Shazam
 public:
     static std::string Recognize(const Fingerprint *fingerprint, const std::string& proxy = "");
     static std::string RecognizePrecise(const std::vector<Fingerprint*>& fingerprints, const std::string& proxy = "");
+    static std::string RecognizeContinuous(const std::string& file_path, const std::string& proxy = "", int consecutive_required = 3);
     static std::string FetchExitIP(const std::string& proxy = "");
     static bool RequestNewTorCircuit(const std::string& password = "");
     static std::string FetchAppleMusicMetadata(const std::string& response, const std::string& proxy = "");

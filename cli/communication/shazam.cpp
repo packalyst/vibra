@@ -310,6 +310,212 @@ int Shazam::extractMatchCount(const std::string& response)
     return count;
 }
 
+std::string Shazam::RecognizeContinuous(const std::string& file_path, const std::string& proxy, int consecutive_required)
+{
+    std::vector<SegmentResult> results;
+
+    // Get duration
+    double duration = vibra_get_duration(file_path.c_str());
+    unsigned int segment_duration = 15;
+
+    // Create single CURL handle to reuse for all requests
+    CURL *curl = curl_easy_init();
+    if (!curl)
+    {
+        return "{\"error\":\"Failed to initialize CURL\"}";
+    }
+
+    // Setup headers once
+    struct curl_slist *headers = nullptr;
+    headers = curl_slist_append(headers, "Accept-Encoding: gzip, deflate, br");
+    headers = curl_slist_append(headers, "Accept: */*");
+    headers = curl_slist_append(headers, "Connection: keep-alive");
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = curl_slist_append(headers, "Content-Language: en_US");
+
+    // Set common options
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
+    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "gzip, deflate, br");
+    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+
+    // Configure proxy if provided
+    if (!proxy.empty())
+    {
+        std::string proxy_str = proxy;
+        curl_proxytype proxy_type = CURLPROXY_HTTP;
+
+        if (proxy_str.find("socks5://") == 0)
+        {
+            proxy_type = CURLPROXY_SOCKS5;
+            proxy_str = proxy_str.substr(9);
+        }
+        else if (proxy_str.find("http://") == 0)
+        {
+            proxy_str = proxy_str.substr(7);
+        }
+
+        std::string auth;
+        size_t at_pos = proxy_str.find('@');
+        if (at_pos != std::string::npos)
+        {
+            auth = proxy_str.substr(0, at_pos);
+            proxy_str = proxy_str.substr(at_pos + 1);
+        }
+
+        curl_easy_setopt(curl, CURLOPT_PROXY, proxy_str.c_str());
+        curl_easy_setopt(curl, CURLOPT_PROXYTYPE, proxy_type);
+
+        if (!auth.empty())
+        {
+            curl_easy_setopt(curl, CURLOPT_PROXYUSERPWD, auth.c_str());
+        }
+    }
+
+    // Get consistent user agent for all requests
+    auto user_agent = getUserAgent();
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, user_agent.c_str());
+
+    // Process segments one at a time and stop on 3 consecutive matches
+    std::map<std::string, std::vector<size_t>> track_hits; // track_id -> indices that matched
+    int consecutive_count = 0;
+    std::string consecutive_track_id;
+    size_t segment_index = 0;
+
+    for (unsigned int offset = 0; offset + segment_duration <= static_cast<unsigned int>(duration); offset += segment_duration) {
+        // Generate fingerprint for this segment
+        Fingerprint* fp = vibra_get_fingerprint_from_offset(file_path.c_str(), offset);
+        if (!fp) {
+            continue;
+        }
+
+        std::string read_buffer;
+        std::string url = getShazamHost();
+        auto content = getRequestContent(fp->uri, fp->sample_ms);
+
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, content.c_str());
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &read_buffer);
+
+        CURLcode res = curl_easy_perform(curl);
+        if (res != CURLE_OK)
+        {
+            std::cerr << "curl_easy_perform() failed: " << curl_easy_strerror(res) << std::endl;
+        }
+
+        SegmentResult result;
+        result.offset_ms = fp->offset_ms;
+        result.response = read_buffer;
+        result.track_id = extractTrackId(read_buffer);
+        result.title = extractTitle(read_buffer);
+        result.artist = extractArtist(read_buffer);
+        result.match_count = extractMatchCount(read_buffer);
+
+        // Free fingerprint
+        vibra_free_fingerprint(fp);
+
+        // Debug output for each segment
+        std::cerr << "[Segment " << (segment_index + 1) << "] offset=" << result.offset_ms << "ms: ";
+        if (!result.track_id.empty()) {
+            std::cerr << result.artist << " - " << result.title << " (id: " << result.track_id << ", matches: " << result.match_count << ")";
+        } else {
+            std::cerr << "NO MATCH";
+        }
+        std::cerr << std::endl;
+
+        results.push_back(result);
+
+        // Track which segments matched which track
+        if (!result.track_id.empty()) {
+            track_hits[result.track_id].push_back(segment_index);
+
+            // Check for consecutive matches
+            if (result.track_id == consecutive_track_id) {
+                consecutive_count++;
+            } else {
+                consecutive_track_id = result.track_id;
+                consecutive_count = 1;
+            }
+
+            // Stop on consecutive_required consecutive matches
+            if (consecutive_count >= consecutive_required) {
+                curl_slist_free_all(headers);
+                curl_easy_cleanup(curl);
+
+                std::string final_response = result.response;
+                size_t last_brace = final_response.rfind('}');
+                if (last_brace != std::string::npos) {
+                    std::string extra = ",\"vibra_segments_checked\":" + std::to_string(results.size()) +
+                                       ",\"vibra_segment_matches\":" + std::to_string(track_hits[result.track_id].size()) +
+                                       ",\"vibra_confident\":true";
+                    final_response.insert(last_brace, extra);
+                }
+                return final_response;
+            }
+        } else {
+            // Reset consecutive count on no match
+            consecutive_count = 0;
+            consecutive_track_id = "";
+        }
+
+        segment_index++;
+    }
+
+    // Cleanup
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    // Find track with most matches
+    std::string best_track_id;
+    size_t best_count = 0;
+    for (const auto& pair : track_hits) {
+        if (pair.second.size() > best_count) {
+            best_count = pair.second.size();
+            best_track_id = pair.first;
+        }
+    }
+
+    // Return result with most matches
+    if (!best_track_id.empty() && best_count >= 2) {
+        // Find the response for this track
+        size_t best_idx = track_hits[best_track_id][0];
+        std::string final_response = results[best_idx].response;
+        size_t last_brace = final_response.rfind('}');
+        if (last_brace != std::string::npos) {
+            std::string extra = ",\"vibra_segments_checked\":" + std::to_string(results.size()) +
+                               ",\"vibra_segment_matches\":" + std::to_string(best_count) +
+                               ",\"vibra_confident\":" + (best_count >= 3 ? "true" : "false");
+            final_response.insert(last_brace, extra);
+        }
+        return final_response;
+    }
+
+    // No agreement - return failure with all results
+    std::stringstream json;
+    json << "{\"matches\":[],\"vibra_segments_checked\":" << results.size();
+    json << ",\"vibra_confident\":false,\"vibra_error\":\"no_agreement\",\"vibra_results\":[";
+
+    bool first = true;
+    for (const auto& r : results) {
+        if (!first) json << ",";
+        first = false;
+        json << "{\"offset_ms\":" << r.offset_ms;
+        if (!r.track_id.empty()) {
+            json << ",\"track_id\":\"" << r.track_id << "\"";
+            json << ",\"title\":\"" << r.title << "\"";
+            json << ",\"artist\":\"" << r.artist << "\"";
+            json << ",\"match_count\":" << r.match_count;
+        } else {
+            json << ",\"track_id\":null";
+        }
+        json << "}";
+    }
+
+    json << "]}";
+    return json.str();
+}
+
 std::string Shazam::RecognizePrecise(const std::vector<Fingerprint*>& fingerprints, const std::string& proxy)
 {
     std::vector<SegmentResult> results;
@@ -396,6 +602,15 @@ std::string Shazam::RecognizePrecise(const std::vector<Fingerprint*>& fingerprin
         result.title = extractTitle(read_buffer);
         result.artist = extractArtist(read_buffer);
         result.match_count = extractMatchCount(read_buffer);
+
+        // Debug output for each segment
+        std::cerr << "[Segment " << (i + 1) << "] offset=" << result.offset_ms << "ms: ";
+        if (!result.track_id.empty()) {
+            std::cerr << result.artist << " - " << result.title << " (id: " << result.track_id << ", matches: " << result.match_count << ")";
+        } else {
+            std::cerr << "NO MATCH";
+        }
+        std::cerr << std::endl;
 
         results.push_back(result);
 

@@ -88,6 +88,15 @@ int CLI::Run(int argc, char **argv)
     args::Flag precise_mode(recognition_options, "precise",
                             "Use multiple segments for more accurate recognition",
                             {"precise"});
+    args::Flag continuous_mode(recognition_options, "continuous",
+                               "Scan segments until consecutive matches agree",
+                               {"continuous"});
+    args::ValueFlag<int> consecutive_matches(recognition_options, "count",
+                                             "Number of consecutive matches to stop (default: 3)",
+                                             {"consecutive"});
+    args::ValueFlag<int> offset_seconds(recognition_options, "seconds",
+                                        "Start recognition from this offset in seconds",
+                                        {"offset"});
     args::Flag apple_music(recognition_options, "apple-music",
                            "Fetch additional metadata from Apple Music",
                            {"apple-music"});
@@ -185,7 +194,12 @@ int CLI::Run(int argc, char **argv)
     {
         file_path = args::get(music_file);
 
-        if (precise_mode && recognize)
+        if (continuous_mode && recognize)
+        {
+            // Continuous mode handled differently - generate and send one at a time
+            // This is handled in RecognizeContinuous with file_path
+        }
+        else if (precise_mode && recognize)
         {
             // Generate fingerprints for verification
             // Strategy: Use smart-analyzed primary segment, then verify with distant segments
@@ -229,7 +243,14 @@ int CLI::Run(int argc, char **argv)
         }
         else
         {
-            fingerprint = getFingerprintFromMusicFile(file_path);
+            if (offset_seconds)
+            {
+                fingerprint = vibra_get_fingerprint_from_offset(file_path.c_str(), args::get(offset_seconds));
+            }
+            else
+            {
+                fingerprint = getFingerprintFromMusicFile(file_path);
+            }
         }
     }
     else if (chunk_seconds && sample_rate && channels && bits_per_sample)
@@ -284,9 +305,16 @@ int CLI::Run(int argc, char **argv)
 
         std::string response;
 
-        if (!fingerprints.empty())
+        if (continuous_mode)
         {
-            // Precise mode - use multiple fingerprints
+            // Continuous mode - generate and send one segment at a time
+            int consec_count = consecutive_matches ? args::get(consecutive_matches) : 3;
+            if (consec_count < 2) consec_count = 2;
+            response = Shazam::RecognizeContinuous(file_path, proxy_string, consec_count);
+        }
+        else if (!fingerprints.empty())
+        {
+            // Precise mode - use pre-generated fingerprints
             response = Shazam::RecognizePrecise(fingerprints, proxy_string);
 
             // Clean up fingerprints
