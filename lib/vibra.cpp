@@ -6,6 +6,11 @@
 #include <cstdio>
 #include <cmath>
 
+// Upstream's June refactor moved Wav/Downsampler/SignatureGenerator/Signature/
+// LowQualityTrack into `namespace vibra`; the fork's helpers below use them
+// unqualified, so bring the namespace in here.
+using namespace vibra;
+
 constexpr std::uint32_t MAX_DURATION_SECONDS = 12;
 
 Fingerprint *_get_fingerprint_from_wav(const Wav &wav);

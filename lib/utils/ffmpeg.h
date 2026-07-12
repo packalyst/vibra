@@ -20,6 +20,10 @@
 namespace ffmpeg
 {
 
+// Upstream moved these into `namespace vibra`; pull them in so the fork's
+// helper code below keeps resolving LowQualityTrack / kLowQuality* unqualified.
+using namespace vibra;
+
 constexpr const char *DEFAULT_FFMPEG_PATHS[] = {"ffmpeg", "ffmpeg.exe"};
 constexpr const char FFMPEG_PATH_ENV[] = "FFMPEG_PATH";
 
@@ -51,10 +55,10 @@ LowQualityTrack FFmpegWrapper::ConvertToLowQaulityPcm(
     ss << ffmpeg_path;
     ss << " -i " << escapeShellArg(input_file);
     ss << " -f "
-       << "s" << LOW_QUALITY_SAMPLE_BIT_WIDTH << "le";
+       << "s" << kLowQualitySampleBitWidth << "le";
     ss << " -acodec "
-       << "pcm_s" << LOW_QUALITY_SAMPLE_BIT_WIDTH << "le";
-    ss << " -ar " << LOW_QUALITY_SAMPLE_RATE;
+       << "pcm_s" << kLowQualitySampleBitWidth << "le";
+    ss << " -ar " << kLowQualitySampleRate;
     ss << " -ac " << 1;
     ss << " -ss " << start_seconds;
     ss << " -t " << duration_seconds;
@@ -71,7 +75,7 @@ LowQualityTrack FFmpegWrapper::ConvertToLowQaulityPcm(
     size_t bytes_read;
 
     LowQualityTrack pcm;
-    pcm.reserve(duration_seconds * LOW_QUALITY_SAMPLE_RATE);
+    pcm.reserve(duration_seconds * kLowQualitySampleRate);
 
     while ((bytes_read = fread(buffer.data(), 1, buffer.size(), pipe)) != 0)
     {
